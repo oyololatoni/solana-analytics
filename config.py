@@ -11,8 +11,6 @@ DATABASE_URL = os.environ.get(
 # Webhook auth
 HELIUS_WEBHOOK_SECRET = os.environ.get("HELIUS_WEBHOOK_SECRET", "")
 
-print("[DEBUG] seen mint:", mint)
-
 # Tokens we care about (comma-separated env var)
 TRACKED_TOKENS = {
     t for t in os.environ.get("TRACKED_TOKENS", "").split(",") if t
