@@ -3,3 +3,8 @@ fly.toml
 __pycache__/
 .envrc
 .venv/
+venv/
+tests/
+.env.local
+.env.example
+.gitignore
