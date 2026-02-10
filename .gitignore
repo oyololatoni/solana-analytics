@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.env.local
+.env
+*.egg-info/
+inotify_fix_test.txt
+test.txt
