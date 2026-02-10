@@ -213,35 +213,64 @@ def deploy_flyio(dry_run=False):
 
 # ─── Step 3: Helius Webhook Verification ─────────────────────────────
 
+# ─── Step 0: Preflight ────────────────────────────────────────────────
+def run_preflight():
+    banner("STEP 0: Preflight — Safety Checks")
+    step("Running local preflight checks")
+    try:
+        # Run preflight.py using the same python interpreter
+        result = subprocess.run(
+            [sys.executable, "preflight.py"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(result.stdout)
+            print(result.stderr)
+            fail("Preflight checks failed! Fix issues before deploying.")
+            return False
+        
+        ok("Preflight passed: Env vars, imports, and DB connection safe.")
+        return True
+    except Exception as e:
+        fail(f"Could not run preflight: {e}")
+        return False
+
+# ─── Step 3: Helius Webhook Verification ─────────────────────────────
+
 def verify_helius(dry_run=False):
-    banner("STEP 3: Helius — Webhook Endpoint Verification")
+    banner("STEP 3: Post-Deployment Verification")
 
     step("Checking webhook endpoint health")
 
     # Try to hit the app's root or health endpoint
     app_url = f"https://{FLY_APP}.fly.dev"
-
+    
+    # Check /health (DB connectivity)
+    step("Verifying Remote Health & DB Connectivity")
     try:
-        # Check if app is responding
-        r = requests.get(f"{app_url}/", timeout=10)
-        ok(f"App responding at {app_url} (status: {r.status_code})")
+        r = requests.get(f"{app_url}/health", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("database") == "connected":
+                ok(f"Remote DB connected: {data}")
+            else:
+                fail(f"Remote DB disconnected! {data}")
+        else:
+            warn(f"Health endpoint returned {r.status_code}")
     except Exception as e:
-        warn(f"App not responding: {e}")
+         warn(f"Health check failed: {e}")
 
     # Check metrics health endpoint
-    step("Testing /metrics/ingestion-health")
+    step("Testing /metrics/ingestion-stats (Config Verification)")
     try:
-        r = requests.get(f"{app_url}/metrics/ingestion-health", timeout=10)
+        r = requests.get(f"{app_url}/metrics/ingestion-stats", timeout=10)
         if r.status_code == 200:
-            health = r.json()
-            ok(f"Health endpoint: status={health.get('status')}")
-            if health.get("alerts"):
-                for alert in health["alerts"]:
-                    warn(f"Alert: {alert}")
+            ok("Ingestion stats endpoint accessible")
         else:
-            warn(f"Health endpoint returned: {r.status_code}")
+            warn(f"Ingestion stats endpoint returned: {r.status_code}")
     except Exception as e:
-        warn(f"Health endpoint failed: {e}")
+        warn(f"Ingestion stats check failed: {e}")
 
     # Verify webhook endpoint exists (without sending auth)
     step("Testing webhook endpoint reachability")
@@ -286,6 +315,10 @@ def main():
     print(f"  DB:   {'skip' if skip_db else 'deploy'}")
     print(f"  Code: {'skip' if db_only else 'deploy'}")
 
+    # Step 0: Preflight (Safety Guarantee)
+    if not run_preflight():
+        return 1
+
     success = True
 
     # Step 1: Database
@@ -303,7 +336,7 @@ def main():
         fail("Fly.io deployment failed")
         success = False
 
-    # Step 3: Helius verification
+    # Step 3: Verify Remote State
     verify_helius(dry_run)
 
     # Summary
@@ -312,7 +345,7 @@ def main():
         ok("All deployment steps completed successfully!")
         print(f"\n  {BOLD}Next steps:{RESET}")
         print(f"  1. Monitor logs:  fly logs -a {FLY_APP}")
-        print(f"  2. Check health:  curl https://{FLY_APP}.fly.dev/metrics/ingestion-health")
+        print(f"  2. Check health:  curl https://{FLY_APP}.fly.dev/health")
         print(f"  3. Watch stats:   curl https://{FLY_APP}.fly.dev/metrics/ingestion-stats")
     else:
         fail("Some deployment steps failed — review output above")
