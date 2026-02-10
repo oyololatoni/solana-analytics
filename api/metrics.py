@@ -1,13 +1,13 @@
 from fastapi import APIRouter
-from api.db import get_conn
+from api.db import get_db_connection
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 @router.get("/unique-makers")
-def unique_makers(token: str):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
+async def unique_makers(token: str):
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
                 """
                 SELECT
                   DATE(block_time) AS day,
@@ -19,16 +19,16 @@ def unique_makers(token: str):
                 """,
                 (token,),
             )
-            rows = cur.fetchall()
+            rows = await cur.fetchall()
 
-    return [{"day": str(day), "value": value} for day, value in rows]
+    return [{"day": str(row[0]), "value": row[1]} for row in rows]
 
 
 @router.get("/swaps")
-def swaps_per_day(token: str):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
+async def swaps_per_day(token: str):
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
                 """
                 SELECT
                   DATE(block_time) AS day,
@@ -40,16 +40,16 @@ def swaps_per_day(token: str):
                 """,
                 (token,),
             )
-            rows = cur.fetchall()
+            rows = await cur.fetchall()
 
-    return [{"day": str(day), "value": value} for day, value in rows]
+    return [{"day": str(row[0]), "value": row[1]} for row in rows]
 
 
 @router.get("/volume")
-def volume_per_day(token: str):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
+async def volume_per_day(token: str):
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
                 """
                 SELECT
                   DATE(block_time) AS day,
@@ -61,21 +61,21 @@ def volume_per_day(token: str):
                 """,
                 (token,),
             )
-            rows = cur.fetchall()
+            rows = await cur.fetchall()
 
-    return [{"day": str(day), "value": value} for day, value in rows]
+    return [{"day": str(row[0]), "value": row[1]} for row in rows]
 
 @router.get("/daily-summary")
-def daily_summary(token: str):
+async def daily_summary(token: str):
     """
     Returns one row per day with:
     - unique makers
     - swap count
     - total volume
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
                 """
                 SELECT
                   day,
@@ -95,25 +95,26 @@ def daily_summary(token: str):
                 """,
                 (token,),
             )
-            rows = cur.fetchall()
+            rows = await cur.fetchall()
 
     return [
         {
-            "day": str(day),
-            "unique_makers": unique_makers,
-            "swaps": swaps,
-            "volume": volume,
+            "day": str(r[0]),
+            "unique_makers": r[1],
+            "swaps": r[2],
+            "volume": r[3],
         }
-        for day, unique_makers, swaps, volume in rows
+        for r in rows
     ]
+
 @router.get("/ingestion-stats")
-def ingestion_stats():
+async def ingestion_stats():
     """
     Returns recent ingestion performance metrics.
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
                 """
                 SELECT
                   source,
@@ -131,7 +132,7 @@ def ingestion_stats():
                 LIMIT 10;
                 """
             )
-            rows = cur.fetchall()
+            rows = await cur.fetchall()
 
     return [
         {
