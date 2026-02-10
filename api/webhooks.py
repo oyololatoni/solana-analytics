@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 import json
 import hashlib
 
+from api import logger
 from db import get_conn
 from config import (
     HELIUS_WEBHOOK_SECRET,
@@ -20,14 +21,17 @@ async def helius_webhook(request: Request):
     # ====================
     auth_header = request.headers.get("authorization")
     if not auth_header:
+        logger.warning("Webhook received without authorization header")
         raise HTTPException(status_code=401, detail="missing authorization header")
 
     prefix = "x-helius-signature:"
     if not auth_header.lower().startswith(prefix):
+        logger.warning(f"Invalid auth header format: {auth_header[:20]}...")
         raise HTTPException(status_code=401, detail="invalid authorization format")
 
     received_secret = auth_header[len(prefix):].strip()
     if received_secret != HELIUS_WEBHOOK_SECRET:
+        logger.error("Unauthorized webhook secret")
         raise HTTPException(status_code=401, detail="unauthorized")
 
     # ====================
@@ -38,11 +42,13 @@ async def helius_webhook(request: Request):
 
     try:
         payload = json.loads(raw_body)
-    except Exception:
-        return {"status": "ignored"}
+    except Exception as e:
+        logger.error(f"Failed to parse webhook JSON: {e}")
+        return {"status": "ignored", "reason": "invalid_json"}
 
     if not isinstance(payload, list):
-        return {"status": "ignored"}
+        logger.warning("Webhook payload is not a list")
+        return {"status": "ignored", "reason": "not_a_list"}
 
     events_received = len(payload)
 
@@ -50,6 +56,7 @@ async def helius_webhook(request: Request):
     # SAFE MODE
     # ====================
     if not INGESTION_ENABLED:
+        logger.info(f"Ingestion disabled, ignoring {events_received} events")
         return {
             "status": "ok",
             "ingestion": "disabled",
@@ -71,6 +78,7 @@ async def helius_webhook(request: Request):
             )
         except Exception:
             conn.rollback()
+            logger.info(f"Ignored replay payload: {payload_hash}")
             return {
                 "status": "ok",
                 "replay": "ignored",
@@ -97,6 +105,7 @@ async def helius_webhook(request: Request):
 
         if not valid_events:
             conn.commit()
+            logger.info("All events in payload expired")
             return {
                 "status": "ok",
                 "expired": True,
@@ -107,7 +116,13 @@ async def helius_webhook(request: Request):
         # INGESTION
         # ====================
         swaps_inserted = 0
-        swaps_ignored = 0
+        
+        # Granular ignore counters (Migration 002)
+        ignored_missing_fields = 0
+        ignored_no_swap_event = 0
+        ignored_no_tracked_tokens = 0
+        ignored_constraint_violation = 0
+        ignored_exception = 0
 
         for tx in valid_events:
             try:
@@ -116,25 +131,34 @@ async def helius_webhook(request: Request):
                 timestamp = tx.get("timestamp")
 
                 if not signature or slot is None or timestamp is None:
-                    swaps_ignored += 1
+                    ignored_missing_fields += 1
                     continue
 
                 swap = tx.get("events", {}).get("swap")
                 if not swap:
-                    swaps_ignored += 1
+                    ignored_no_swap_event += 1
                     continue
 
                 block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
                 inserted_for_tx = False
+                found_tracked_token = False
 
-                for leg in swap.get("tokenInputs", []):
+                # Broad Swap Detection: Check both inputs and outputs
+                all_legs = swap.get("tokenInputs", []) + swap.get("tokenOutputs", [])
+                
+                for leg in all_legs:
                     mint = leg.get("mint")
                     if mint not in TRACKED_TOKENS:
                         continue
-
+                    
+                    found_tracked_token = True
                     wallet = leg.get("userAccount")
-                    amount = leg["rawTokenAmount"]["tokenAmount"]
+                    amount = leg.get("rawTokenAmount", {}).get("tokenAmount")
+                    
+                    if not amount:
+                        continue
 
+                    # Migration 003: Fixed unique constraint
                     cur.execute(
                         """
                         INSERT INTO events (
@@ -149,7 +173,7 @@ async def helius_webhook(request: Request):
                             metadata
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (tx_signature) DO NOTHING
+                        ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
                         """,
                         (
                             signature,
@@ -167,13 +191,27 @@ async def helius_webhook(request: Request):
                     if cur.rowcount == 1:
                         swaps_inserted += 1
                         inserted_for_tx = True
+                    else:
+                        ignored_constraint_violation += 1
 
-                if not inserted_for_tx:
-                    swaps_ignored += 1
+                if not found_tracked_token:
+                    ignored_no_tracked_tokens += 1
+                elif not inserted_for_tx and cur.rowcount == 0:
+                    # Already counted as constraint violation above if rowcount == 0
+                    pass
 
             except Exception as tx_err:
-                swaps_ignored += 1
-                print(f"[INGESTION][WARN] tx_error={tx_err}")
+                ignored_exception += 1
+                logger.error(f"Error processing tx {signature}: {tx_err}")
+
+        # Total ignored (sum of all reasons as per Migration 002 doc)
+        total_ignored = (
+            ignored_missing_fields + 
+            ignored_no_swap_event + 
+            ignored_no_tracked_tokens + 
+            ignored_constraint_violation + 
+            ignored_exception
+        )
 
         # ---- stats (non-fatal) ----
         try:
@@ -183,19 +221,29 @@ async def helius_webhook(request: Request):
                     source,
                     events_received,
                     swaps_inserted,
-                    swaps_ignored
+                    swaps_ignored,
+                    ignored_missing_fields,
+                    ignored_no_swap_event,
+                    ignored_no_tracked_tokens,
+                    ignored_constraint_violation,
+                    ignored_exception
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     "helius",
                     events_received,
                     swaps_inserted,
-                    swaps_ignored,
+                    total_ignored,
+                    ignored_missing_fields,
+                    ignored_no_swap_event,
+                    ignored_no_tracked_tokens,
+                    ignored_constraint_violation,
+                    ignored_exception
                 ),
             )
         except Exception as stats_err:
-            print(f"[INGESTION][WARN] stats_insert_failed={stats_err}")
+            logger.warning(f"Failed to insert ingestion stats: {stats_err}")
 
         conn.commit()
 
@@ -203,17 +251,23 @@ async def helius_webhook(request: Request):
         cur.close()
         conn.close()
 
-    print(
-        f"[INGESTION] source=helius "
-        f"events={events_received} "
-        f"inserted={swaps_inserted} "
-        f"ignored={swaps_ignored}"
+    logger.info(
+        f"HELIOUS WEBHOOK | received: {events_received} | inserted: {swaps_inserted} | ignored: {total_ignored} "
+        f"(tracked: {ignored_no_tracked_tokens}, exists: {ignored_constraint_violation})"
     )
 
     return {
         "status": "ok",
         "events_received": events_received,
         "inserted": swaps_inserted,
-        "ignored": swaps_ignored,
+        "ignored": total_ignored,
+        "details": {
+            "no_tracked_tokens": ignored_no_tracked_tokens,
+            "constraint_violations": ignored_constraint_violation,
+            "missing_fields": ignored_missing_fields,
+            "no_swap_event": ignored_no_swap_event,
+            "exceptions": ignored_exception
+        }
     }
+
 
