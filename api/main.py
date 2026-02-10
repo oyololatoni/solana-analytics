@@ -1,20 +1,32 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from api import logger
+from api.db import get_conn
 from api.metrics import router as metrics_router
 from api.webhooks import router as webhooks_router
 from config import TRACKED_TOKENS, INGESTION_ENABLED
 
 if not TRACKED_TOKENS:
-    raise RuntimeError("TRACKED_TOKENS is empty — ingestion would discard everything")
+    logger.error("TRACKED_TOKENS is empty — ingestion would discard everything")
+    raise RuntimeError("TRACKED_TOKENS is empty")
     
-print("[BOOT] INGESTION_ENABLED =", INGESTION_ENABLED)
-print("[BOOT] TRACKED_TOKENS =", TRACKED_TOKENS)
+logger.info(f"[BOOT] INGESTION_ENABLED = {INGESTION_ENABLED}")
+logger.info(f"[BOOT] TRACKED_TOKENS = {TRACKED_TOKENS}")
 
 app = FastAPI(title="Solana Analytics")
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    health_status = {"status": "ok", "database": "disconnected"}
+    try:
+        with get_conn() as conn:
+            health_status["database"] = "connected"
+    except Exception as e:
+        logger.error(f"Health check DB failed: {e}")
+        health_status["status"] = "error"
+        health_status["error"] = str(e)
+    
+    return health_status
 
 @app.get("/", response_class=HTMLResponse)
 def index():
