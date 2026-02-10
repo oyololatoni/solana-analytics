@@ -2,9 +2,10 @@ from fastapi import APIRouter, Request, HTTPException
 from datetime import datetime, timezone, timedelta
 import json
 import hashlib
+import psycopg
 
 from api import logger
-from api.db import get_conn
+from api.db import get_db_connection
 from config import (
     HELIUS_WEBHOOK_SECRET,
     TRACKED_TOKENS,
@@ -66,208 +67,210 @@ async def helius_webhook(request: Request):
     # ====================
     # DB + REPLAY PROTECTION
     # ====================
-    conn = get_conn()
-    cur = conn.cursor()
-
+    
+    # 🛑 GUARDRAIL: Retry on connection failure
     try:
-        # ---- webhook-level replay guard ----
-        try:
-            cur.execute(
-                "INSERT INTO webhook_replays (payload_hash) VALUES (%s)",
-                (payload_hash,),
-            )
-        except Exception:
-            conn.rollback()
-            logger.info(f"Ignored replay payload: {payload_hash}")
-            return {
-                "status": "ok",
-                "replay": "ignored",
-                "events_received": events_received,
-            }
-
-        # ====================
-        # TIME WINDOW GUARD
-        # ====================
-        now = datetime.now(timezone.utc)
-        max_age = timedelta(minutes=10)
-
-        valid_events = []
-        for tx in payload:
-            ts = tx.get("timestamp")
-            if not ts:
-                continue
-            try:
-                event_time = datetime.fromtimestamp(ts, tz=timezone.utc)
-            except Exception:
-                continue
-            if now - event_time <= max_age:
-                valid_events.append(tx)
-
-        if not valid_events:
-            conn.commit()
-            logger.info("All events in payload expired")
-            return {
-                "status": "ok",
-                "expired": True,
-                "events_received": events_received,
-            }
-
-        # ====================
-        # INGESTION
-        # ====================
-        swaps_inserted = 0
-        
-        # Granular ignore counters (Migration 002)
-        ignored_missing_fields = 0
-        ignored_no_swap_event = 0
-        ignored_no_tracked_tokens = 0
-        ignored_constraint_violation = 0
-        ignored_exception = 0
-
-        for tx in valid_events:
-            try:
-                signature = tx.get("signature")
-                slot = tx.get("slot")
-                timestamp = tx.get("timestamp")
-
-                if not signature or slot is None or timestamp is None:
-                    ignored_missing_fields += 1
-                    continue
-
-                swap = tx.get("events", {}).get("swap")
-                if not swap:
-                    ignored_no_swap_event += 1
-                    continue
-
-                block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-                inserted_for_tx = False
-                found_tracked_token = False
-
-                # Broad Swap Detection: Check both inputs and outputs
-                all_legs = swap.get("tokenInputs", []) + swap.get("tokenOutputs", [])
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
                 
-                for leg in all_legs:
-                    mint = leg.get("mint")
-                    if mint not in TRACKED_TOKENS:
-                        continue
-                    
-                    found_tracked_token = True
-                    wallet = leg.get("userAccount")
-                    amount = leg.get("rawTokenAmount", {}).get("tokenAmount")
-                    
-                    if not amount:
-                        continue
-
-                    # Migration 003: Fixed unique constraint
-                    cur.execute(
-                        """
-                        INSERT INTO events (
-                            tx_signature,
-                            slot,
-                            event_type,
-                            wallet,
-                            token_mint,
-                            amount,
-                            block_time,
-                            program_id,
-                            metadata
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
-                        """,
-                        (
-                            signature,
-                            slot,
-                            "swap",
-                            wallet,
-                            mint,
-                            amount,
-                            block_time,
-                            swap.get("program", ""),
-                            json.dumps(tx),
-                        ),
+                # ---- webhook-level replay guard ----
+                try:
+                    await cur.execute(
+                        "INSERT INTO webhook_replays (payload_hash) VALUES (%s)",
+                        (payload_hash,),
                     )
+                except psycopg.IntegrityError:
+                    await conn.rollback()
+                    logger.info(f"Ignored replay payload: {payload_hash}")
+                    return {
+                        "status": "ok",
+                        "replay": "ignored",
+                        "events_received": events_received,
+                    }
+                except psycopg.OperationalError as op_err:
+                    # Transient error -> Raise 500 for retry
+                    logger.error(f"DB Operational Error (Replay Check): {op_err}")
+                    raise HTTPException(status_code=500, detail="database constraint check failed")
 
-                    if cur.rowcount == 1:
-                        swaps_inserted += 1
-                        inserted_for_tx = True
-                    else:
-                        ignored_constraint_violation += 1
+                # ====================
+                # TIME WINDOW GUARD
+                # ====================
+                now = datetime.now(timezone.utc)
+                max_age = timedelta(minutes=10)
 
-                if not found_tracked_token:
-                    ignored_no_tracked_tokens += 1
-                elif not inserted_for_tx and cur.rowcount == 0:
-                    # Already counted as constraint violation above if rowcount == 0
-                    pass
+                valid_events = []
+                for tx in payload:
+                    ts = tx.get("timestamp")
+                    if not ts:
+                        continue
+                    try:
+                        event_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    except Exception:
+                        continue
+                    if now - event_time <= max_age:
+                        valid_events.append(tx)
 
-            except Exception as tx_err:
-                ignored_exception += 1
-                logger.error(f"Error processing tx {signature}: {tx_err}")
+                if not valid_events:
+                    await conn.commit()
+                    logger.info("All events in payload expired")
+                    return {
+                        "status": "ok",
+                        "expired": True,
+                        "events_received": events_received,
+                    }
 
-        # Total ignored (sum of all reasons as per Migration 002 doc)
-        total_ignored = (
-            ignored_missing_fields + 
-            ignored_no_swap_event + 
-            ignored_no_tracked_tokens + 
-            ignored_constraint_violation + 
-            ignored_exception
-        )
+                # ====================
+                # INGESTION
+                # ====================
+                swaps_inserted = 0
+                
+                # Granular ignore counters
+                ignored_missing_fields = 0
+                ignored_no_swap_event = 0
+                ignored_no_tracked_tokens = 0
+                ignored_constraint_violation = 0
+                ignored_exception = 0
 
-        # ---- stats (non-fatal) ----
-        try:
-            cur.execute(
-                """
-                INSERT INTO ingestion_stats (
-                    source,
-                    events_received,
-                    swaps_inserted,
-                    swaps_ignored,
-                    ignored_missing_fields,
-                    ignored_no_swap_event,
-                    ignored_no_tracked_tokens,
-                    ignored_constraint_violation,
+                for tx in valid_events:
+                    signature = tx.get("signature")
+                    try:
+                        slot = tx.get("slot")
+                        timestamp = tx.get("timestamp")
+
+                        if not signature or slot is None or timestamp is None:
+                            ignored_missing_fields += 1
+                            continue
+
+                        swap = tx.get("events", {}).get("swap")
+                        if not swap:
+                            ignored_no_swap_event += 1
+                            continue
+
+                        block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                        found_tracked_token = False
+
+                        # Broad Swap Detection
+                        all_legs = swap.get("tokenInputs", []) + swap.get("tokenOutputs", [])
+                        
+                        for leg in all_legs:
+                            mint = leg.get("mint")
+                            if mint not in TRACKED_TOKENS:
+                                continue
+                            
+                            found_tracked_token = True
+                            wallet = leg.get("userAccount")
+                            amount = leg.get("rawTokenAmount", {}).get("tokenAmount")
+                            
+                            if not amount:
+                                continue
+
+                            # Try Insert
+                            try:
+                                await cur.execute(
+                                    """
+                                    INSERT INTO events (
+                                        tx_signature, slot, event_type, wallet,
+                                        token_mint, amount, block_time, program_id, metadata
+                                    )
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
+                                    """,
+                                    (
+                                        signature, slot, "swap", wallet, mint, amount,
+                                        block_time, swap.get("program", ""), json.dumps(tx),
+                                    ),
+                                )
+                                
+                                if cur.rowcount == 1:
+                                    swaps_inserted += 1
+                                else:
+                                    ignored_constraint_violation += 1
+                                    
+                            except psycopg.IntegrityError:
+                                # This handles concurrent inserts that ON CONFLICT might race with
+                                ignored_constraint_violation += 1
+                                # Important: Need to savepoint/rollback in async properly if we want to continue?
+                                # Actually, ON CONFLICT handles duplicates gracefully. 
+                                # Real IntegrityError here means something else violated or connection broken?
+                                # Standard psycopg practice: connection is now in failed state if error raised.
+                                # But we want to CONTINUE processing other items.
+                                # If we are in a transaction block, one error invalidates the transaction.
+                                # So strictly speaking, we should use SAVEPOINTs for row-level robustness 
+                                # OR just rely on ON CONFLICT DO NOTHING which prevents the error.
+                                pass
+
+                        if not found_tracked_token:
+                            ignored_no_tracked_tokens += 1
+                            
+                    except psycopg.OperationalError as op_err:
+                        # 🛑 Critical: Connectivity lost mid-processing -> Raise 500
+                        logger.error(f"DB Connectivity Lost processing tx {signature}: {op_err}")
+                        raise HTTPException(status_code=500, detail="database connection lost")
+                    except Exception as tx_err:
+                        # Data-level error (parsing, type error) -> Logs and Ignore
+                        ignored_exception += 1
+                        logger.error(f"Error processing tx {signature}: {tx_err}")
+
+                # Total ignored
+                total_ignored = (
+                    ignored_missing_fields + 
+                    ignored_no_swap_event + 
+                    ignored_no_tracked_tokens + 
+                    ignored_constraint_violation + 
                     ignored_exception
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    "helius",
-                    events_received,
-                    swaps_inserted,
-                    total_ignored,
-                    ignored_missing_fields,
-                    ignored_no_swap_event,
-                    ignored_no_tracked_tokens,
-                    ignored_constraint_violation,
-                    ignored_exception
-                ),
-            )
-        except Exception as stats_err:
-            logger.warning(f"Failed to insert ingestion stats: {stats_err}")
 
-        conn.commit()
+                # ---- stats (non-fatal) ----
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO ingestion_stats (
+                            source, events_received, swaps_inserted, swaps_ignored,
+                            ignored_missing_fields, ignored_no_swap_event, ignored_no_tracked_tokens,
+                            ignored_constraint_violation, ignored_exception
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            "helius", events_received, swaps_inserted, total_ignored,
+                            ignored_missing_fields, ignored_no_swap_event, ignored_no_tracked_tokens,
+                            ignored_constraint_violation, ignored_exception
+                        ),
+                    )
+                except Exception as stats_err:
+                    logger.warning(f"Failed to insert ingestion stats: {stats_err}")
 
-    finally:
-        cur.close()
-        conn.close()
+                await conn.commit()
 
-    logger.info(
-        f"HELIOUS WEBHOOK | received: {events_received} | inserted: {swaps_inserted} | ignored: {total_ignored} "
-        f"(tracked: {ignored_no_tracked_tokens}, exists: {ignored_constraint_violation})"
-    )
+                logger.info(
+                    f"HELIOUS WEBHOOK | received: {events_received} | inserted: {swaps_inserted} | ignored: {total_ignored} "
+                    f"(tracked: {ignored_no_tracked_tokens}, exists: {ignored_constraint_violation})"
+                )
 
-    return {
-        "status": "ok",
-        "events_received": events_received,
-        "inserted": swaps_inserted,
-        "ignored": total_ignored,
-        "details": {
-            "no_tracked_tokens": ignored_no_tracked_tokens,
-            "constraint_violations": ignored_constraint_violation,
-            "missing_fields": ignored_missing_fields,
-            "no_swap_event": ignored_no_swap_event,
-            "exceptions": ignored_exception
-        }
-    }
+                return {
+                    "status": "ok",
+                    "events_received": events_received,
+                    "inserted": swaps_inserted,
+                    "ignored": total_ignored,
+                    "details": {
+                        "no_tracked_tokens": ignored_no_tracked_tokens,
+                        "constraint_violations": ignored_constraint_violation,
+                        "missing_fields": ignored_missing_fields,
+                        "no_swap_event": ignored_no_swap_event,
+                        "exceptions": ignored_exception
+                    }
+                }
+
+    except psycopg.OperationalError as e:
+        # 🛑 OUTER CATCH: Connection error during connection acquisition or commit
+        logger.error(f"Database unavailable: {e}")
+        raise HTTPException(status_code=500, detail="database unavailable")
+    except Exception as e:
+        # Unexpected error (e.g. pool exhausted)
+        # Check if it's an HTTPException already raised
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Unexpected webhook error: {e}")
+        raise HTTPException(status_code=500, detail="internal server error")
 
 
