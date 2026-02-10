@@ -106,4 +106,47 @@ def daily_summary(token: str):
         }
         for day, unique_makers, swaps, volume in rows
     ]
+@router.get("/ingestion-stats")
+def ingestion_stats():
+    """
+    Returns recent ingestion performance metrics.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  source,
+                  events_received,
+                  swaps_inserted,
+                  swaps_ignored,
+                  ignored_missing_fields,
+                  ignored_no_swap_event,
+                  ignored_no_tracked_tokens,
+                  ignored_constraint_violation,
+                  ignored_exception,
+                  created_at
+                FROM ingestion_stats
+                ORDER BY created_at DESC
+                LIMIT 10;
+                """
+            )
+            rows = cur.fetchall()
 
+    return [
+        {
+            "source": r[0],
+            "events_received": r[1],
+            "swaps_inserted": r[2],
+            "swaps_ignored": r[3],
+            "details": {
+                "missing_fields": r[4],
+                "no_swap_event": r[5],
+                "no_tracked_tokens": r[6],
+                "constraint_violations": r[7],
+                "exceptions": r[8],
+            },
+            "timestamp": str(r[9])
+        }
+        for r in rows
+    ]
