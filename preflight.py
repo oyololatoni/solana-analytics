@@ -8,6 +8,7 @@ print("[PREFLIGHT] starting")
 required = [
     "DATABASE_URL",
     "HELIUS_WEBHOOK_SECRET",
+    "TRACKED_TOKENS",
 ]
 
 missing = [k for k in required if not os.environ.get(k)]
