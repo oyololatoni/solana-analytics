@@ -1,12 +1,7 @@
 import os
 
 # Database
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://neondb_owner:npg_YtcqIl6J0ogf@"
-    "ep-odd-dew-agyg7avg.c-2.eu-central-1.aws.neon.tech/"
-    "neondb?sslmode=require",
-)
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Webhook auth
 HELIUS_WEBHOOK_SECRET = os.environ.get("HELIUS_WEBHOOK_SECRET", "")
