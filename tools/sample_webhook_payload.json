@@ -1,0 +1,22 @@
+[
+  {
+    "signature": "replay_test_signature_1",
+    "slot": 999999999,
+    "timestamp": 1700000000,
+    "events": {
+      "swap": {
+        "program": "Raydium",
+        "tokenInputs": [
+          {
+            "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+            "userAccount": "TestWallet111111111111111111111111111111",
+            "rawTokenAmount": {
+              "tokenAmount": 12345
+            }
+          }
+        ]
+      }
+    }
+  }
+]
+
