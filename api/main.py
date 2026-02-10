@@ -1,7 +1,8 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from api import logger
-from api.db import get_conn
+from api.db import init_db, close_db, get_db_connection
 from api.metrics import router as metrics_router
 from api.webhooks import router as webhooks_router
 from config import TRACKED_TOKENS, INGESTION_ENABLED
@@ -13,13 +14,19 @@ if not TRACKED_TOKENS:
 logger.info(f"[BOOT] INGESTION_ENABLED = {INGESTION_ENABLED}")
 logger.info(f"[BOOT] TRACKED_TOKENS = {TRACKED_TOKENS}")
 
-app = FastAPI(title="Solana Analytics")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+    await close_db()
+
+app = FastAPI(title="Solana Analytics", lifespan=lifespan)
 
 @app.get("/health")
-def health():
+async def health():
     health_status = {"status": "ok", "database": "disconnected"}
     try:
-        with get_conn() as conn:
+        async with get_db_connection() as conn:
             health_status["database"] = "connected"
     except Exception as e:
         logger.error(f"Health check DB failed: {e}")
