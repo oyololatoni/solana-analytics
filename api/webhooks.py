@@ -4,7 +4,7 @@ import json
 import hashlib
 
 from api import logger
-from db import get_conn
+from api.db import get_conn
 from config import (
     HELIUS_WEBHOOK_SECRET,
     TRACKED_TOKENS,
