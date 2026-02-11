@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS raw_webhooks (
 );
 
 -- Index for queue processing
-CREATE INDEX idx_raw_webhooks_pending ON raw_webhooks (status, created_at) WHERE status = 'pending';
-CREATE INDEX idx_raw_webhooks_payload_hash ON raw_webhooks (payload_hash);
+CREATE INDEX IF NOT EXISTS idx_raw_webhooks_pending ON raw_webhooks (status, created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_raw_webhooks_payload_hash ON raw_webhooks (payload_hash);
 
 COMMENT ON TABLE raw_webhooks IS 'Queue for incoming webhooks before worker processing';
