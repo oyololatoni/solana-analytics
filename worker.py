@@ -261,12 +261,12 @@ async def process_batch():
                             (job_id,)
                         )
                 
-                except Exception as job_err:
-                    logger.error(f"Job {job_id} failed: {job_err}")
-                    await cur.execute(
-                        "UPDATE raw_webhooks SET status = 'failed', error_message = %s, processed_at = NOW() WHERE id = %s",
-                        (str(job_err), job_id)
-                    )
+                    except Exception as job_err:
+                        logger.error(f"Job {job_id} failed: {job_err}")
+                        await cur.execute(
+                            "UPDATE raw_webhooks SET status = 'failed', error_message = %s, processed_at = NOW() WHERE id = %s",
+                            (str(job_err), job_id)
+                        )
 
             await conn.commit()
             return len(jobs)
