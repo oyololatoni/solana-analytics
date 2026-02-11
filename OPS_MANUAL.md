@@ -78,3 +78,42 @@ We run strict monitoring (`tools/monitor.py`) as a sidecar to the worker. It ale
 **Routes:**
 *   **Logs**: All alerts go to Fly logs (STDERR).
 *   **Slack**: Set `SLACK_WEBHOOK_URL` in Fly secrets to receive notifications.
+
+## 8. Managing Alerts (Alert Engine)
+
+The Alert Engine (`tools/alert_engine.py`) allows you to monitor metrics and get notified via Slack.
+
+### A. Adding an Alert
+Connect to your database (Local or Fly) and insert a row into the `alerts` table.
+
+**Example: Notify if Fartcoin (9BB6...) volume triggers > 1000**
+```sql
+INSERT INTO alerts (token_mint, metric, condition, value, cooldown_minutes)
+VALUES (
+  '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump', 
+  'volume_1h', 
+  'gt', 
+  1000, 
+  60
+);
+```
+
+### B. Running the Engine
+The engine is a script that runs an evaluation loop.
+
+**On Fly.io (Production):**
+1. SSH into the machine:
+   ```bash
+   fly ssh console -a solana-analytics
+   ```
+2. Start the engine in the background (using nohup or screen is recommended):
+   ```bash
+   export $(cat .env.local | xargs)  # Load env vars if needed, or rely on Fly secrets
+   python tools/alert_engine.py
+   ```
+
+**Locally:**
+```bash
+venv/bin/python tools/alert_engine.py
+```
+
