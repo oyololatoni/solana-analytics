@@ -8,12 +8,6 @@ from api.webhooks import router as webhooks_router
 from api.analytics import router as analytics_router
 from config import TRACKED_TOKENS, INGESTION_ENABLED
 
-# ...
-
-app.include_router(metrics_router)
-app.include_router(webhooks_router)
-app.include_router(analytics_router)
-
 if not TRACKED_TOKENS:
     logger.error("TRACKED_TOKENS is empty — ingestion would discard everything")
     raise RuntimeError("TRACKED_TOKENS is empty")
@@ -129,6 +123,5 @@ def index():
 """
     
 app.include_router(metrics_router)
-
 app.include_router(webhooks_router)
-
+app.include_router(analytics_router)
