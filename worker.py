@@ -221,30 +221,33 @@ async def process_batch():
                                             signature = raw_tx.get("signature")
                                             if signature:
                                                 try:
-                                                    ts_raw = raw_tx.get("timestamp")
-                                                    bt = datetime.fromtimestamp(ts_raw, tz=timezone.utc) if ts_raw else datetime.now(timezone.utc)
-                                                    
-                                                    await cur.execute(
-                                                        """
-                                                        INSERT INTO events (
-                                                            tx_signature, slot, event_type, wallet,
-                                                            token_mint, amount, block_time, program_id, metadata, direction
+                                                    # SAVEPOINT for Legacy Write
+                                                    async with conn.transaction():
+                                                        ts_raw = raw_tx.get("timestamp")
+                                                        bt = datetime.fromtimestamp(ts_raw, tz=timezone.utc) if ts_raw else datetime.now(timezone.utc)
+                                                        
+                                                        await cur.execute(
+                                                            """
+                                                            INSERT INTO events (
+                                                                tx_signature, slot, event_type, wallet,
+                                                                token_mint, amount, block_time, program_id, metadata, direction
+                                                            )
+                                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                            ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
+                                                            """,
+                                                            (
+                                                                signature, raw_tx.get("slot"), "swap", 
+                                                                raw_tx.get("feePayer"), 
+                                                                "legacy", 0, 
+                                                                bt,
+                                                                swap.get("program", ""), 
+                                                                json.dumps(raw_tx), 
+                                                                "unknown"
+                                                            ),
                                                         )
-                                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                                        ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
-                                                        """,
-                                                        (
-                                                            signature, raw_tx.get("slot"), "swap", 
-                                                            raw_tx.get("feePayer"), 
-                                                            "legacy", 0, 
-                                                            bt,
-                                                            swap.get("program", ""), 
-                                                            json.dumps(raw_tx), 
-                                                            "unknown"
-                                                        ),
-                                                    )
-                                                except:
-                                                    pass 
+                                                except Exception as legacy_err:
+                                                    logger.error(f"Legacy Write FAILED for {signature}: {legacy_err}")
+                                                    # Savepoint handles rollback, so we can continue. 
 
                                     except Exception as e:
                                         ignored_exception += 1
