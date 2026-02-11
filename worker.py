@@ -181,31 +181,34 @@ async def process_batch():
                                 events_received = len(payload)
                                 for raw_tx in payload:
                                     try:
+                                        print(f"DEBUG: Processing TX {raw_tx.get('signature')}", flush=True)
                                         # 1. Normalize
                                         canonical_events = adapter.normalize_tx(raw_tx)
+                                        print(f"DEBUG: Normalized {len(canonical_events)} events", flush=True)
                                         
                                         # 2. Process
                                         found_tracked_token = False
                                         
                                         for event in canonical_events:
+                                            print(f"DEBUG: Event {event}", flush=True)
                                             if event.token_address not in TRACKED_TOKENS:
                                                 continue
                                             
                                             found_tracked_token = True
                                             
-                                            # DEBUG LOG
-                                            # logger.info(f"Processing Event: {event}")
-
                                             token_id = await ensure_token_id(
                                                 cur, chain_id, event.token_address, event.timestamp, batch_token_ids
                                             )
+                                            print(f"DEBUG: Token ID {token_id}", flush=True)
                                             if not token_id: continue
 
                                             if isinstance(event, CanonicalWalletInteraction):
                                                 await upsert_wallet_interaction(cur, chain_id, token_id, event)
+                                                print("DEBUG: Interaction Upserted", flush=True)
                                                 
                                             elif isinstance(event, CanonicalTrade):
                                                 inserted = await insert_trade(cur, chain_id, token_id, event)
+                                                print(f"DEBUG: Trade Inserted: {inserted}", flush=True)
                                                 if inserted:
                                                     swaps_inserted += 1
 
