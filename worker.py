@@ -263,7 +263,7 @@ async def process_batch():
                                                 side, amount_token, amount_sol, slot, timestamp
                                             )
                                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                            ON CONFLICT (chain_id, tx_signature) DO NOTHING
+                                            ON CONFLICT (chain_id, tx_signature, timestamp) DO NOTHING
                                             """,
                                             (
                                                 chain_id, token_id, signature, wallet,
