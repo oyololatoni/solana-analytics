@@ -19,6 +19,30 @@ BASE_URL = f"https://api.helius.xyz/v0/addresses/{TOKEN_MINT}/transactions"
 HELIUS_API_KEY = os.environ["HELIUS_API_KEY"]
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 
+async def insert_event(cur, signature, slot, wallet, amount, raw_amount, decimals, direction, block_time, swap, tx):
+    """
+    Helper to insert a single event into the DB.
+    """
+    try:
+        await cur.execute(
+            """
+            INSERT INTO events (
+                tx_signature, slot, event_type, wallet,
+                token_mint, amount, raw_amount, decimals, direction, block_time, program_id, metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
+            """,
+            (
+                signature, slot, "swap", wallet, TOKEN_MINT, amount,
+                raw_amount, decimals, direction, block_time, swap.get("program", ""), json.dumps(tx),
+            ),
+        )
+    except psycopg.IntegrityError:
+        pass
+    except Exception as e:
+        print(f"Error inserting {signature}: {e}")
+
 # ------------------
 # CORE LOGIC
 # ------------------
