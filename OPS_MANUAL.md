@@ -64,3 +64,17 @@ Use `tools/replay_webhook.py` to simulate Helius events against your local runni
 *   No manual file uploads.
 *   All changes go through PRs / Commits to `main`.
 *   CI checks (`.github/workflows/ci.yml`) enforce quality before you even think about deploying.
+
+## 7. Proactive Alerting
+
+We run strict monitoring (`tools/monitor.py`) as a sidecar to the worker. It alerts on silent failures.
+
+**Alert Types:**
+1.  **No Ingestion Activity**: Traffic stopped (Check Fly/Helius).
+2.  **Ingestion Active but 0 Inserts**: The "Silent Failure". Webhook works, but data is rejected (Schema drift, Bad Token List).
+3.  **High Ignore Ratio**: >80% rejection rate.
+4.  **Safe Mode Active**: `INGESTION_ENABLED=0` left on by accident.
+
+**Routes:**
+*   **Logs**: All alerts go to Fly logs (STDERR).
+*   **Slack**: Set `SLACK_WEBHOOK_URL` in Fly secrets to receive notifications.
