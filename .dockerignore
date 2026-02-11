@@ -8,3 +8,5 @@ tests/
 .env.local
 .env.example
 .gitignore
+fly.api.toml
+fly.worker.toml
