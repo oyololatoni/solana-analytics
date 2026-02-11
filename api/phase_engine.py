@@ -1,383 +1,559 @@
 """
-Phase Detection Engine
-======================
-Classifies tokens into lifecycle phases (Initial / Destructive / Post-Destructive)
-and computes a continuous Expected Value (EV) score based on participation structure.
+Phase Detection Engine — Production Spec
+==========================================
+Deterministic 7-phase classification + 3-layer EV scoring (0-100).
+Dashboard reads from token_state table, never raw events.
 
-Core question: "Is this token statistically positioned for asymmetric upside right now?"
+Phases (priority order):
+  DESTRUCTIVE → DISTRIBUTION → POST_DESTRUCTIVE → ACCELERATION →
+  EXPANSION → MATURE → INITIAL → DORMANT
+
+EV Score (0-100):
+  Structural (0-40) + Capital Quality (0-30) + Lifecycle Bias (0-30)
 """
 
 from api.db import get_db_connection
 from typing import List, Dict, Optional
 import statistics
 import asyncio
+from datetime import datetime, timezone
 
 
 # ---------------------------------------------------------------------------
-# 1. Data Layer — Pull daily snapshots from events table
+# 1. Base Window Metrics (from raw events, 48h window)
 # ---------------------------------------------------------------------------
 
-async def get_daily_snapshots(mint: str, days: int = 7) -> List[Dict]:
+async def compute_window_metrics(mint: str, offset_days: int = 0) -> Dict:
     """
-    Returns one row per day for the given token over the last N days.
-    Includes repeat makers (stickiness) for cohort analysis.
+    Compute base metrics for a 48-hour window.
+    offset_days=0 → current window (now - 48h to now)
+    offset_days=2 → previous window (now - 96h to now - 48h)
     """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
-            # Enhanced query to get repeat makers (wallets active today that were active yesterday)
             await cur.execute(
                 """
-                WITH daily_wallets AS (
-                    SELECT DATE(block_time) as day, wallet
-                    FROM events
-                    WHERE token_mint = %s AND block_time > NOW() - INTERVAL '%s days'
-                    GROUP BY 1, 2
-                )
-                SELECT 
-                    curr.day, 
-                    COUNT(DISTINCT curr.wallet) as unique_makers,
-                    COUNT(*) FILTER (WHERE prev.wallet IS NOT NULL) as repeat_makers,
-                    (SELECT COUNT(*) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as swap_count,
-                    (SELECT COALESCE(SUM(amount), 0) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as volume,
-                    (SELECT COALESCE(SUM(amount), 0) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day AND direction = 'in') as vol_buy
-                FROM daily_wallets curr
-                LEFT JOIN daily_wallets prev ON curr.wallet = prev.wallet AND prev.day = curr.day - INTERVAL '1 day'
-                GROUP BY curr.day
-                ORDER BY curr.day ASC
+                SELECT
+                    COUNT(DISTINCT wallet) as unique_makers,
+                    COUNT(*) as swap_count,
+                    COALESCE(SUM(amount), 0) as volume,
+                    COALESCE(SUM(CASE WHEN direction = 'in' THEN amount ELSE 0 END), 0) as vol_buy,
+                    COALESCE(SUM(CASE WHEN direction = 'out' THEN amount ELSE 0 END), 0) as vol_sell
+                FROM events
+                WHERE token_mint = %s
+                  AND block_time > NOW() - INTERVAL '%s days'
+                  AND block_time <= NOW() - INTERVAL '%s days'
+                  AND event_type != 'init'
                 """,
-                (mint, days + 1, mint, mint, mint),
+                (mint, offset_days + 2, offset_days),
+            )
+            row = await cur.fetchone()
+
+    U = row[0] or 0
+    S = row[1] or 0
+    V = float(row[2] or 0)
+    vol_buy = float(row[3] or 0)
+    vol_sell = float(row[4] or 0)
+
+    VPU = V / U if U > 0 else 0
+    USR = U / S if S > 0 else 0
+
+    return {
+        "U": U,
+        "S": S,
+        "V": V,
+        "VPU": VPU,
+        "USR": USR,
+        "vol_buy": vol_buy,
+        "vol_sell": vol_sell,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2. Historical Derivatives (2-day delta)
+# ---------------------------------------------------------------------------
+
+def compute_deltas(current: Dict, previous: Dict) -> Dict:
+    """Compute percentage change between two 48h windows."""
+    def delta(curr, prev):
+        if prev == 0:
+            return 0
+        return (curr - prev) / prev
+
+    return {
+        "dU": round(delta(current["U"], previous["U"]), 4),
+        "dS": round(delta(current["S"], previous["S"]), 4),
+        "dV": round(delta(current["V"], previous["V"]), 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. Peak Calculations (from daily VPU history)
+# ---------------------------------------------------------------------------
+
+async def compute_peak_metrics(mint: str, days: int = 14) -> Dict:
+    """
+    Compute peak VPU, decline from peak, and days since peak
+    using daily snapshots over the last N days.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    DATE(block_time) as day,
+                    COUNT(DISTINCT wallet) as unique_makers,
+                    COUNT(*) as swap_count,
+                    COALESCE(SUM(amount), 0) as volume
+                FROM events
+                WHERE token_mint = %s
+                  AND block_time > NOW() - INTERVAL '%s days'
+                  AND event_type != 'init'
+                GROUP BY DATE(block_time)
+                ORDER BY day ASC
+                """,
+                (mint, days),
             )
             rows = await cur.fetchall()
 
-    return [
-        {
-            "day": str(row[0]),
-            "unique_makers": row[1],
-            "repeat_makers": row[2],
-            "swap_count": row[3],
-            "volume": float(row[4]),
-            "vol_buy": float(row[5]),
+    if not rows:
+        return {
+            "peak_vpu": 0, "decline_from_peak": 0,
+            "days_since_peak": 0, "vpu_cv": 1.0,
+            "vpu_history": [], "median_vpu": 0,
+            "usr_recovering": False, "vpu_rising": False,
+            "usr_drop": 0, "vpu_stable": False,
+            "usr_healthy": False,
         }
-        for row in rows
-    ]
 
+    vpu_history = []
+    usr_history = []
+    for row in rows:
+        u = row[1] or 1
+        s = row[2] or 1
+        v = float(row[3] or 0)
+        vpu_history.append(v / u)
+        usr_history.append(u / s)
 
-# ---------------------------------------------------------------------------
-# 2. Compute Derived Metrics for each snapshot row
-# ---------------------------------------------------------------------------
+    peak_vpu = max(vpu_history) if vpu_history else 0
+    current_vpu = vpu_history[-1] if vpu_history else 0
 
-def enrich_snapshots(snapshots: List[Dict]) -> List[Dict]:
-    """
-    Adds computed ratios to each daily snapshot:
-      - unique_to_swap_ratio
-      - volume_per_unique
-    """
-    for s in snapshots:
-        swaps = s["swap_count"] or 1  # avoid division by zero
-        uniques = s["unique_makers"] or 1
+    decline_from_peak = 0
+    if peak_vpu > 0:
+        decline_from_peak = (current_vpu - peak_vpu) / peak_vpu  # negative when below peak
 
-        s["unique_to_swap_ratio"] = round(uniques / swaps, 4)
-        s["volume_per_unique"] = round(s["volume"] / uniques, 2)
+    peak_idx = vpu_history.index(peak_vpu) if peak_vpu > 0 else 0
+    days_since_peak = len(vpu_history) - 1 - peak_idx
 
-    return snapshots
+    # VPU coefficient of variation (stability measure)
+    vpu_cv = 1.0
+    if len(vpu_history) >= 3:
+        recent = vpu_history[-3:]
+        mean_v = statistics.mean(recent) or 1
+        vpu_cv = (statistics.stdev(recent) / mean_v) if len(recent) > 1 else 0
 
+    median_vpu = statistics.median(vpu_history) if vpu_history else 0
 
-# ---------------------------------------------------------------------------
-# 3. Compute Derived Signals (rolling window comparisons)
-# ---------------------------------------------------------------------------
+    # USR recovering? (last 2 days trending up)
+    usr_recovering = False
+    if len(usr_history) >= 3:
+        usr_recovering = usr_history[-1] > usr_history[-2] > usr_history[-3]
 
-def compute_signals(snapshots: List[Dict]) -> Dict:
-    """
-    Takes enriched snapshots (>= 3 days) and computes change signals.
-    Returns a dict of all signals needed for phase classification + EV scoring.
-    """
-    if len(snapshots) < 3:
-        return {"insufficient_data": True}
+    # VPU rising?
+    vpu_rising = False
+    if len(vpu_history) >= 2:
+        vpu_rising = vpu_history[-1] > vpu_history[-2]
 
-    # Latest day
-    today = snapshots[-1]
-    # Previous 2 days for acceleration
-    prev_2d = snapshots[-3:-1]
+    # USR drop (max drop from recent peak)
+    usr_drop = 0
+    if usr_history:
+        usr_peak = max(usr_history)
+        if usr_peak > 0:
+            usr_drop = (usr_peak - usr_history[-1]) / usr_peak
 
-    # --- A) Unique Growth Rate (2-day) ---
-    avg_prev_uniques = statistics.mean([d["unique_makers"] for d in prev_2d]) or 1
-    unique_growth_rate = (today["unique_makers"] - avg_prev_uniques) / avg_prev_uniques
+    # VPU stable = CV < 0.3
+    vpu_stable = vpu_cv < 0.3
 
-    # --- B) Swap Acceleration (2-day) ---
-    avg_prev_swaps = statistics.mean([d["swap_count"] for d in prev_2d]) or 1
-    swap_acceleration = (today["swap_count"] - avg_prev_swaps) / avg_prev_swaps
-
-    # --- C) Volume Acceleration (2-day) ---
-    avg_prev_vol = statistics.mean([d["volume"] for d in prev_2d]) or 1
-    volume_acceleration = (today["volume"] - avg_prev_vol) / avg_prev_vol
-
-    # --- D) Ratio Health Trend (slope over last 3 days) ---
-    last_3_ratios = [d["unique_to_swap_ratio"] for d in snapshots[-3:]]
-    # Simple slope: (last - first) / 2
-    ratio_health_trend = (last_3_ratios[-1] - last_3_ratios[0]) / 2
-
-    # --- E) Volume Per Unique Stability (coefficient of variation over 3 days) ---
-    last_3_vpu = [d["volume_per_unique"] for d in snapshots[-3:]]
-    vpu_mean = statistics.mean(last_3_vpu) or 1
-    vpu_stdev = statistics.stdev(last_3_vpu) if len(last_3_vpu) > 1 else 0
-    vpu_cv = vpu_stdev / vpu_mean  # lower = more stable
-
-    # --- F) Peak & Decline metrics (contextual) ---
-    all_uniques = [d["unique_makers"] for d in snapshots]
-    peak_uniques = max(all_uniques)
-    decline_from_peak = (peak_uniques - today["unique_makers"]) / peak_uniques if peak_uniques > 0 else 0
-
-    # Days since peak
-    peak_day_idx = all_uniques.index(peak_uniques)
-    days_since_peak = len(snapshots) - 1 - peak_day_idx
-
-    # Swap reduction from peak
-    all_swaps = [d["swap_count"] for d in snapshots]
-    peak_swaps = max(all_swaps)
-    swap_reduction_from_peak = (peak_swaps - today["swap_count"]) / peak_swaps if peak_swaps > 0 else 0
+    # USR healthy = above 0.2
+    usr_healthy = usr_history[-1] > 0.2 if usr_history else False
 
     return {
-        "insufficient_data": False,
-
-        # Core metrics (latest day)
-        "unique_makers": today["unique_makers"],
-        "swap_count": today["swap_count"],
-        "volume": today["volume"],
-        "unique_to_swap_ratio": today["unique_to_swap_ratio"],
-        "volume_per_unique": today["volume_per_unique"],
-
-        # Derived signals
-        "unique_growth_rate": round(unique_growth_rate, 4),
-        "swap_acceleration": round(swap_acceleration, 4),
-        "volume_acceleration": round(volume_acceleration, 4),
-        "ratio_health_trend": round(ratio_health_trend, 4),
-        "vpu_cv": round(vpu_cv, 4),  # volume-per-unique coefficient of variation
-
-        # Contextual
-        "peak_uniques": peak_uniques,
+        "peak_vpu": round(peak_vpu, 4),
         "decline_from_peak": round(decline_from_peak, 4),
         "days_since_peak": days_since_peak,
-        "swap_reduction_from_peak": round(swap_reduction_from_peak, 4),
-        
-        # New: Growth State (Actionable Text)
-        "growth_state": "Accelerating" if unique_growth_rate > 0.1 else "Stalling" if unique_growth_rate < -0.1 else "Stable",
-        "exhaustion": "High" if decline_from_peak > 0.3 else "Low", 
-        
-        # New: Stickiness (Cohort health)
-        "stickiness": round(today["repeat_makers"] / today["unique_makers"], 4) if today["unique_makers"] > 0 else 0,
-        
-        # New: Buy Pressure (Exhaustion indicator)
-        "buy_ratio": round(today["vol_buy"] / today["volume"], 4) if today["volume"] > 0 else 0.5,
+        "vpu_cv": round(vpu_cv, 4),
+        "vpu_history": vpu_history,
+        "median_vpu": round(median_vpu, 4),
+        "usr_recovering": usr_recovering,
+        "vpu_rising": vpu_rising,
+        "usr_drop": round(usr_drop, 4),
+        "vpu_stable": vpu_stable,
+        "usr_healthy": usr_healthy,
     }
 
-    # New: Liquidity Shift (Volatility of buy/sell ratio over last 3 days)
-    if not signals.get("insufficient_data"):
-        recent_buys = [s.get("vol_buy", 0) / s.get("volume", 1) for s in snapshots[-3:]]
-        mean_buy = sum(recent_buys) / len(recent_buys)
-        variance = sum((x - mean_buy) ** 2 for x in recent_buys) / len(recent_buys)
-        signals["liquidity_shift"] = round(variance ** 0.5, 4)
-    else:
-        signals["liquidity_shift"] = 0
-
-    return signals
-
 
 # ---------------------------------------------------------------------------
-# 4. Phase Classification
+# 4. Deterministic Phase Classification (7 phases, priority order)
 # ---------------------------------------------------------------------------
 
-def classify_phase(signals: Dict) -> str:
+def classify_phase(metrics: Dict) -> str:
     """
-    Classifies token into one of:
-      EARLY_EXPANSION  — Organic expansion beginning (Blue)
-      EXPANSION        — Strong growth, healthy (Green)
-      LATE_HYPE        — Growth stalling, volume rising (Yellow)
-      DESTRUCTIVE      — Distribution / collapse (Red)
-      POST_DESTRUCTIVE — Base forming (highest EV) (Green/Blue)
-      INSUFFICIENT_DATA — Not enough history
+    Deterministic phase classification.
+    Priority: Destructive > Distribution > Post-Destructive >
+              Acceleration > Expansion > Mature > Initial > Dormant
     """
-    if signals.get("insufficient_data"):
-        return "INSUFFICIENT_DATA"
+    U = metrics.get("U", 0)
+    dU = metrics.get("dU", 0)
+    dV = metrics.get("dV", 0)
+    decline = metrics.get("decline_from_peak", 0)
+    days_since_peak = metrics.get("days_since_peak", 0)
+    vpu_cv = metrics.get("vpu_cv", 1.0)
+    median_vpu = metrics.get("median_vpu", 0)
+    VPU = metrics.get("VPU", 0)
+    usr_recovering = metrics.get("usr_recovering", False)
+    vpu_rising = metrics.get("vpu_rising", False)
+    usr_drop = metrics.get("usr_drop", 0)
 
-    ugr = signals["unique_growth_rate"]
-    rht = signals["ratio_health_trend"]
-    vpu_cv = signals["vpu_cv"]
-    decline = signals["decline_from_peak"]
-    swap_reduction = signals["swap_reduction_from_peak"]
-    days_since_peak = signals["days_since_peak"]
+    # 1. DESTRUCTIVE — sharp collapse
+    if dU < -0.40 and decline <= -0.50 and days_since_peak > 3:
+        return "DESTRUCTIVE"
 
-    # 1. POST-DESTRUCTIVE (Highest EV)
-    # Must have had a significant prior decline (not just flat from birth)
+    # 2. DISTRIBUTION — smart money exiting
     if (
-        -0.1 <= ugr <= 0.1             # uniques stabilized
-        and decline > 0.3               # had a significant drop from peak
-        and swap_reduction > 0.3        # swaps have cooled off
-        and vpu_cv < 1.0                # volume per unique not wildly volatile
+        dU < 0.2
+        and dV >= 0
+        and VPU >= 1.5 * median_vpu if median_vpu > 0 else False
+        and usr_drop > 0.3
+        and days_since_peak <= 3
+    ):
+        return "DISTRIBUTION"
+
+    # 3. POST_DESTRUCTIVE — base forming (highest EV)
+    if (
+        decline <= -0.6
+        and days_since_peak >= 3
+        and dU >= 0
+        and -0.2 <= dV <= 0.2
+        and vpu_cv < 0.25
+        and usr_recovering
     ):
         return "POST_DESTRUCTIVE"
 
-    # 2. DESTRUCTIVE (Worst EV)
-    if ugr < -0.2:
-        return "DESTRUCTIVE"
+    # 4. ACCELERATION — strong momentum
+    if (
+        dU >= 1.0
+        and dV >= 1.0
+        and dV >= dU
+        and vpu_rising
+        and usr_drop < 0.25
+        and abs(decline) < 0.1
+    ):
+        return "ACCELERATION"
 
-    # 3. EXPANSION (Growth)
-    if ugr > 0.1:
-        # Check if Early or Late
-        if rht >= 0 and decline < 0.1:
-            # Ratio improving/healthy + near peak = Early/Strong
-            return "EARLY_EXPANSION" if days_since_peak <= 1 else "EXPANSION"
-        else:
-            # Ratio deteriorating or decline setting in = Late Hype
-            return "LATE_HYPE"
+    # 5. EXPANSION — healthy growth
+    if (
+        dU >= 0.5
+        and dV >= 0.5
+        and abs(dU - dV) <= 0.2
+        and usr_drop < 0.2
+        and decline >= -0.3
+    ):
+        return "EXPANSION"
 
-    # Default: Stalling/Choppy
-    return "DESTRUCTIVE" if rht < -0.1 else "ACCUMULATING"
+    # 6. MATURE — plateau
+    if -0.1 <= dU <= 0.1 and decline >= -0.4:
+        return "MATURE"
+
+    # 7. INITIAL — early traction
+    if dU > 1.0 and U < 500:
+        return "INITIAL"
+
+    # Default
+    return "DORMANT"
 
 
 # ---------------------------------------------------------------------------
-# 5. EV Score & Decision Bias
+# 5. Three-Layer EV Scoring (0-100)
 # ---------------------------------------------------------------------------
 
-def _normalize(value: float, low: float, high: float) -> float:
-    """Clamp and normalize a value to 0-1 range."""
-    if high == low:
-        return 0.5
-    return max(0.0, min(1.0, (value - low) / (high - low)))
+def structural_score(dU: float, dV: float, usr_deviation: float) -> float:
+    """Layer 1 — Structural participation (0-40)."""
+    score_u = min(max(dU / 2, 0), 1)
+    score_v = min(max(dV / 2, 0), 1)
+    score_usr = max(0, 1 - abs(usr_deviation))
+    return round((score_u * 15) + (score_v * 15) + (score_usr * 10), 2)
 
 
-def compute_ev_score(signals: Dict, phase: str) -> float:
-    """
-    Continuous expected value score (0.0 = worst, 1.0 = best).
-    """
-    if signals.get("insufficient_data"):
-        return 0.0
+def capital_quality_score(vpu_stable: bool, usr_healthy: bool, cv: float) -> float:
+    """Layer 2 — Capital quality (0-30)."""
+    score = 0.0
+    if vpu_stable:
+        score += 10
+    if usr_healthy:
+        score += 10
+    score += max(0, 10 - (cv * 20))
+    return round(min(score, 30), 2)
 
-    ugr = signals["unique_growth_rate"]
-    rht = signals["ratio_health_trend"]
-    vpu_cv = signals["vpu_cv"]
-    swap_reduction = signals["swap_reduction_from_peak"]
-    days_since_peak = signals["days_since_peak"]
 
-    # A) Unique Growth Score
-    if ugr >= 0:
-        unique_score = 1.0 - abs(ugr - 0.05) * 1.5
-    else:
-        unique_score = max(0, 1.0 + ugr)
-    unique_score = max(0.0, min(1.0, unique_score))
+def lifecycle_score(phase: str) -> float:
+    """Layer 3 — Phase lifecycle bias (0-30)."""
+    weights = {
+        "DORMANT": 5,
+        "INITIAL": 10,
+        "MATURE": 8,
+        "EXPANSION": 20,
+        "ACCELERATION": 15,
+        "DISTRIBUTION": 5,
+        "DESTRUCTIVE": 0,
+        "POST_DESTRUCTIVE": 30,
+    }
+    return float(weights.get(phase, 0))
 
-    # B) Ratio Health Score
-    ratio_score = _normalize(rht, -0.1, 0.1)
 
-    # C) Volume Stability Score
-    volume_stability_score = _normalize(1.0 - vpu_cv, 0.0, 1.0)
+def compute_ev_score(struct: float, capital: float, lifecycle: float) -> float:
+    """Final EV = sum of all three layers (0-100)."""
+    return round(struct + capital + lifecycle, 2)
 
-    # D) Compression Score
-    compression_score = _normalize(swap_reduction, 0.0, 0.8)
-
-    # E) Recovery Time Score
-    recovery_score = _normalize(days_since_peak, 0, 5)
-    
-    # Phase Bonus/Penalty
-    phase_bonus = 0.0
-    if phase == "POST_DESTRUCTIVE": phase_bonus = 0.2
-    if phase == "EARLY_EXPANSION": phase_bonus = 0.1
-    if phase == "DESTRUCTIVE": phase_bonus = -0.3
-
-    ev = (
-        0.30 * unique_score
-        + 0.25 * ratio_score
-        + 0.20 * volume_stability_score
-        + 0.15 * compression_score
-        + 0.10 * recovery_score
-        + phase_bonus
-    )
-
-    return max(0.0, min(1.0, round(ev, 4)))
 
 def get_decision_bias(ev_score: float, phase: str) -> str:
-    """Returns opinionated 1-word bias."""
-    if phase == "INSUFFICIENT_DATA": return "WAIT"
-    if phase == "DESTRUCTIVE": return "AVOID"
-    
-    if ev_score > 0.75: return "BUY"
-    if ev_score > 0.6: return "CONSIDER"
-    if ev_score > 0.4: return "WATCH"
+    """Interpret EV score into actionable bias."""
+    if phase == "DESTRUCTIVE":
+        return "AVOID"
+    if phase == "DISTRIBUTION":
+        return "CAUTION"
+    if ev_score >= 80:
+        return "BUY"
+    if ev_score >= 65:
+        return "CONSIDER"
+    if ev_score >= 50:
+        return "WATCH"
+    if ev_score >= 35:
+        return "WEAK"
     return "AVOID"
 
 
 # ---------------------------------------------------------------------------
-# 6. Top-Level API: Analyze a single token
+# 6. Full Analysis Pipeline (single token)
 # ---------------------------------------------------------------------------
 
-async def analyze_token(mint: str, days: int = 7) -> Dict:
+async def analyze_token(mint: str) -> Dict:
     """
     Full pipeline for a single token:
-      events table → daily snapshots → enriched → signals → phase + EV
+      events → window metrics → deltas → peak → phase → EV → persist
     """
-    snapshots = await get_daily_snapshots(mint, days)
-    snapshots = enrich_snapshots(snapshots)
-    signals = compute_signals(snapshots)
-    phase = classify_phase(signals)
-    ev_score = compute_ev_score(signals, phase)
-    decision = get_decision_bias(ev_score, phase)
+    # 1. Current and previous window metrics
+    current = await compute_window_metrics(mint, offset_days=0)
+    previous = await compute_window_metrics(mint, offset_days=2)
 
-    # Simple Time-in-Phase logic (reverse scan snapshots and classify each)
-    # In a real app we'd store phase history. Here we re-compute.
-    time_in_phase = 1
-    if len(snapshots) > 1:
-        # Check backward from yesterday
-        for i in range(len(snapshots)-2, -1, -1):
-            prev_signals = compute_signals(snapshots[:i+2])
-            if prev_signals.get("insufficient_data"): break
-            prev_phase = classify_phase(prev_signals)
-            if prev_phase == phase:
-                time_in_phase += 1
-            else:
-                break
+    # 2. Deltas
+    deltas = compute_deltas(current, previous)
 
-    return {
-        "mint": mint,
-        "phase": phase,
-        "time_in_phase": time_in_phase,
-        "ev_score": ev_score,
-        "decision": decision,
-        "signals": signals,
-        "snapshots": snapshots,
-        "days_of_data": len(snapshots),
+    # 3. Peak metrics
+    peaks = await compute_peak_metrics(mint, days=14)
+
+    # 4. Merge all metrics
+    metrics = {
+        **current,
+        **deltas,
+        **peaks,
     }
 
+    # 5. Classify phase
+    phase = classify_phase(metrics)
+
+    # 6. Compute EV score (3 layers)
+    # USR deviation from optimal (0.3 is ideal)
+    usr_dev = current["USR"] - 0.3
+
+    struct = structural_score(deltas["dU"], deltas["dV"], usr_dev)
+    capital = capital_quality_score(peaks["vpu_stable"], peaks["usr_healthy"], peaks["vpu_cv"])
+    lifecycle = lifecycle_score(phase)
+    ev = compute_ev_score(struct, capital, lifecycle)
+
+    # 7. Decision
+    decision = get_decision_bias(ev, phase)
+
+    result = {
+        "mint": mint,
+        "phase": phase,
+        "ev_score": ev,
+        "structural_score": struct,
+        "capital_score": capital,
+        "lifecycle_score": lifecycle,
+        "decision": decision,
+        # Raw metrics for display
+        "unique_makers": current["U"],
+        "swap_count": current["S"],
+        "volume": current["V"],
+        "unique_growth": deltas["dU"],
+        "volume_growth": deltas["dV"],
+        "vpu": current["VPU"],
+        "usr": current["USR"],
+        "vpu_cv": peaks["vpu_cv"],
+        "decline_from_peak": peaks["decline_from_peak"],
+        "days_since_peak": peaks["days_since_peak"],
+    }
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 7. State Persistence (writes to token_state + token_scores_history)
+# ---------------------------------------------------------------------------
+
+async def persist_state(result: Dict):
+    """Upsert into token_state and append to token_scores_history."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # Upsert token_state
+            await cur.execute(
+                """
+                INSERT INTO token_state (
+                    token_mint, current_phase, ev_score,
+                    structural_score, capital_score, lifecycle_score,
+                    unique_makers, swap_count, volume,
+                    unique_growth, volume_growth, vpu, usr, vpu_cv,
+                    decline_from_peak, days_since_peak, decision_bias,
+                    last_updated
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, NOW()
+                )
+                ON CONFLICT (token_mint) DO UPDATE SET
+                    current_phase = EXCLUDED.current_phase,
+                    ev_score = EXCLUDED.ev_score,
+                    structural_score = EXCLUDED.structural_score,
+                    capital_score = EXCLUDED.capital_score,
+                    lifecycle_score = EXCLUDED.lifecycle_score,
+                    unique_makers = EXCLUDED.unique_makers,
+                    swap_count = EXCLUDED.swap_count,
+                    volume = EXCLUDED.volume,
+                    unique_growth = EXCLUDED.unique_growth,
+                    volume_growth = EXCLUDED.volume_growth,
+                    vpu = EXCLUDED.vpu,
+                    usr = EXCLUDED.usr,
+                    vpu_cv = EXCLUDED.vpu_cv,
+                    decline_from_peak = EXCLUDED.decline_from_peak,
+                    days_since_peak = EXCLUDED.days_since_peak,
+                    decision_bias = EXCLUDED.decision_bias,
+                    last_updated = NOW()
+                """,
+                (
+                    result["mint"], result["phase"], result["ev_score"],
+                    result["structural_score"], result["capital_score"],
+                    result["lifecycle_score"],
+                    result["unique_makers"], result["swap_count"],
+                    result["volume"], result["unique_growth"],
+                    result["volume_growth"], result["vpu"], result["usr"],
+                    result["vpu_cv"], result["decline_from_peak"],
+                    result["days_since_peak"], result["decision"],
+                ),
+            )
+
+            # Append to history
+            await cur.execute(
+                """
+                INSERT INTO token_scores_history (
+                    token_mint, phase, ev_score,
+                    structural_score, capital_score, lifecycle_score
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    result["mint"], result["phase"], result["ev_score"],
+                    result["structural_score"], result["capital_score"],
+                    result["lifecycle_score"],
+                ),
+            )
+            await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 8. Discovery: Active mints from DB
+# ---------------------------------------------------------------------------
 
 async def get_active_mints(days: int = 7) -> List[str]:
-    """
-    Returns a list of all distinct token mints that have had activity
-    in the last N days.
-    """
+    """Returns all distinct token mints with activity in last N days."""
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT DISTINCT token_mint FROM events WHERE block_time > NOW() - INTERVAL '%s days'",
+                """
+                SELECT DISTINCT token_mint FROM events
+                WHERE block_time > NOW() - INTERVAL '%s days'
+                  AND event_type != 'init'
+                """,
                 (days,),
             )
             rows = await cur.fetchall()
     return [row[0] for row in rows]
 
 
-async def analyze_all_tokens(mints: Optional[List[str]] = None, days: int = 7) -> List[Dict]:
-    """
-    Analyze tokens and return sorted by EV score descending.
-    If mints is None, discovers all active mints from the database.
-    Runs analysis in parallel.
-    """
-    if mints is None:
-        mints = await get_active_mints(days)
+# ---------------------------------------------------------------------------
+# 9. Bulk Analysis + Persist
+# ---------------------------------------------------------------------------
 
+async def analyze_all_tokens(days: int = 7) -> List[Dict]:
+    """
+    Analyze all active tokens, persist state, return sorted by EV desc.
+    """
+    mints = await get_active_mints(days)
     if not mints:
         return []
 
-    # Run analysis in parallel
-    tasks = [analyze_token(mint, days) for mint in mints]
+    tasks = [analyze_token(mint) for mint in mints]
     results = await asyncio.gather(*tasks)
 
-    # Sort by EV score descending (best opportunities first)
+    # Persist all states
+    for r in results:
+        await persist_state(r)
+
     results.sort(key=lambda x: x["ev_score"], reverse=True)
     return results
+
+
+# ---------------------------------------------------------------------------
+# 10. Read from snapshot (fast path for dashboard)
+# ---------------------------------------------------------------------------
+
+async def get_all_states() -> List[Dict]:
+    """Read directly from token_state table. No computation."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    token_mint, current_phase, ev_score,
+                    structural_score, capital_score, lifecycle_score,
+                    unique_makers, swap_count, volume,
+                    unique_growth, volume_growth, vpu, usr, vpu_cv,
+                    decline_from_peak, days_since_peak, decision_bias,
+                    last_updated
+                FROM token_state
+                ORDER BY ev_score DESC
+                """
+            )
+            rows = await cur.fetchall()
+
+    return [
+        {
+            "mint": r[0],
+            "phase": r[1],
+            "ev_score": float(r[2]),
+            "structural_score": float(r[3]),
+            "capital_score": float(r[4]),
+            "lifecycle_score": float(r[5]),
+            "unique_makers": r[6],
+            "swap_count": r[7],
+            "volume": float(r[8]),
+            "unique_growth": float(r[9]),
+            "volume_growth": float(r[10]),
+            "vpu": float(r[11]),
+            "usr": float(r[12]),
+            "vpu_cv": float(r[13]),
+            "decline_from_peak": float(r[14]),
+            "days_since_peak": r[15],
+            "decision": r[16],
+            "last_updated": r[17].isoformat() if r[17] else None,
+        }
+        for r in rows
+    ]
