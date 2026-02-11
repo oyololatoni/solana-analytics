@@ -12,6 +12,11 @@ from api import logger
 from api.db import init_db, close_db, get_db_connection
 from config import TRACKED_TOKENS
 
+# Feature Pipeline
+from api.rolling_metrics import compute_rolling_metrics
+from api.features_v1 import check_snapshot_trigger
+from api.lifecycle import check_lifecycle_updates
+
 # Chain Abstraction
 from chains.registry import registry
 from chains.solana_adapter import SolanaAdapter
@@ -286,13 +291,15 @@ async def process_batch():
 
             await conn.commit()
             
-            # Post-batch: Check Snapshots (Placeholder)
-            # In v1, we check if liquidity > $50k. Currently not tracked.
+            # Post-batch: Check Snapshot Triggers for each token in this batch
             if batch_token_ids:
                 for token_address, token_id in batch_token_ids.items():
-                    # Placeholder: Check if we have enough data (e.g. 50 trades) to simulate validity
-                    # await check_and_trigger_snapshot(token_id)
-                    pass
+                    try:
+                        triggered = await check_snapshot_trigger(token_id)
+                        if triggered:
+                            logger.info(f"Snapshot triggered for token {token_id} ({token_address})")
+                    except Exception as trigger_err:
+                        logger.error(f"Snapshot trigger error for {token_id}: {trigger_err}")
 
             return len(jobs)
 
@@ -312,10 +319,32 @@ async def run_worker():
 
     idle_polls = 0
     poll_interval = POLL_INTERVAL
+    last_rolling_metrics = 0.0  # epoch
+    last_label_check = 0.0
+    ROLLING_INTERVAL = 60.0    # Compute rolling metrics every 60s
+    LABEL_INTERVAL = 300.0     # Check labels every 5 minutes
 
     while not shutdown_event.is_set():
         try:
             count = await process_batch()
+            now_epoch = asyncio.get_event_loop().time()
+
+            # Periodic: Rolling Metrics (every 60s)
+            if now_epoch - last_rolling_metrics > ROLLING_INTERVAL:
+                try:
+                    await compute_rolling_metrics()
+                    last_rolling_metrics = now_epoch
+                except Exception as rm_err:
+                    logger.error(f"Rolling metrics error: {rm_err}")
+
+            # Periodic: Lifecycle Worker (every 5 min)
+            if now_epoch - last_label_check > LABEL_INTERVAL:
+                try:
+                    await check_lifecycle_updates()
+                    last_label_check = now_epoch
+                except Exception as lw_err:
+                    logger.error(f"Lifecycle worker error: {lw_err}")
+
             if count == 0:
                 idle_polls += 1
                 poll_interval = min(POLL_INTERVAL * (1.5 ** (idle_polls - 1)), 10.0)
