@@ -83,7 +83,75 @@ async def process_batch():
                                     ignored_missing_fields += 1
                                     continue
 
-                                # 2. Swap Event
+                                # --- 6. TOKEN BALANCE & LIQUIDITY (Advanced Ingestion) ---
+                                # Process this FIRST to capture all interactions, even without swap events
+                                balance_changes = tx.get("tokenBalanceChanges", [])
+                                if balance_changes:
+                                    logger.info(f"Processing {len(balance_changes)} balance changes")
+                                    for change in balance_changes:
+                                        mint = change.get("mint")
+                                        if mint not in TRACKED_TOKENS:
+                                            continue
+                                        
+                                        wallet = change.get("userAccount")
+                                        if not wallet:
+                                            continue
+                                            
+                                        # Resolve Token ID (Reuse cache)
+                                        token_id = batch_token_ids.get(mint)
+                                        if not token_id:
+                                            logger.info(f"Resolving token ID for {mint} on chain {chain_id} (Balance Change)")
+                                            await cur.execute(
+                                                """
+                                                INSERT INTO tokens (chain_id, address, created_at_chain)
+                                                VALUES (%s, %s, %s)
+                                                ON CONFLICT (chain_id, address) DO UPDATE 
+                                                SET address = EXCLUDED.address
+                                                RETURNING id
+                                                """,
+                                                (chain_id, mint, block_time)
+                                            )
+                                            row = await cur.fetchone()
+                                            if row:
+                                                token_id = row[0]
+                                                batch_token_ids[mint] = token_id
+                                            else:
+                                                continue
+
+                                        # Upsert Wallet
+                                        await cur.execute(
+                                            """
+                                            INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
+                                            VALUES (%s, %s, %s, %s)
+                                            ON CONFLICT (chain_id, address) DO UPDATE
+                                            SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
+                                            RETURNING id
+                                            """,
+                                            (chain_id, wallet, block_time, block_time)
+                                        )
+                                        wallet_id = (await cur.fetchone())[0]
+
+                                        # Update Interactions
+                                        raw_amount_obj = change.get("rawTokenAmount", {})
+                                        raw_amount = raw_amount_obj.get("tokenAmount", "0")
+                                        
+                                        await cur.execute(
+                                            """
+                                            INSERT INTO wallet_token_interactions (
+                                                chain_id, token_id, wallet_id, 
+                                                first_interaction, last_interaction, 
+                                                last_balance_token, interaction_count
+                                            )
+                                            VALUES (%s, %s, %s, %s, %s, %s, 1)
+                                            ON CONFLICT (token_id, wallet_id) DO UPDATE SET
+                                                last_interaction = EXCLUDED.last_interaction,
+                                                last_balance_token = EXCLUDED.last_balance_token,
+                                                interaction_count = wallet_token_interactions.interaction_count + 1
+                                            """,
+                                            (chain_id, token_id, wallet_id, block_time, block_time, raw_amount)
+                                        )
+
+                                # 2. Swap Event (Existing)
                                 swap = tx.get("events", {}).get("swap")
                                 if not swap:
                                     ignored_no_swap_event += 1
@@ -192,72 +260,6 @@ async def process_batch():
                                         raise e # DEBUG: Raise to see error in DB status
 
 
-                                    # --- 6. TOKEN BALANCE & LIQUIDITY (Advanced Ingestion) ---
-                                    balance_changes = tx.get("tokenBalanceChanges", [])
-                                    for change in balance_changes:
-                                        mint = change.get("mint")
-                                        if mint not in TRACKED_TOKENS:
-                                            continue
-                                        
-                                        wallet = change.get("userAccount")
-                                        if not wallet:
-                                            continue
-                                            
-                                        # Resolve Token ID (Reuse cache)
-                                        token_id = batch_token_ids.get(mint)
-                                        if not token_id:
-                                            logger.info(f"Resolving token ID for {mint} on chain {chain_id} (Balance Change)")
-                                            await cur.execute(
-                                                """
-                                                INSERT INTO tokens (chain_id, address, created_at_chain)
-                                                VALUES (%s, %s, %s)
-                                                ON CONFLICT (chain_id, address) DO UPDATE 
-                                                SET address = EXCLUDED.address
-                                                RETURNING id
-                                                """,
-                                                (chain_id, mint, block_time)
-                                            )
-                                            row = await cur.fetchone()
-                                            if row:
-                                                token_id = row[0]
-                                                batch_token_ids[mint] = token_id
-                                            else:
-                                                continue
-
-                                        # Upsert Wallet
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
-                                            VALUES (%s, %s, %s, %s)
-                                            ON CONFLICT (chain_id, address) DO UPDATE
-                                            SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
-                                            RETURNING id
-                                            """,
-                                            (chain_id, wallet, block_time, block_time)
-                                        )
-                                        wallet_id = (await cur.fetchone())[0]
-
-                                        # Update Interactions
-                                        raw_amount_obj = change.get("rawTokenAmount", {})
-                                        raw_amount = raw_amount_obj.get("tokenAmount", "0")
-                                        # Helius rawTokenAmount is string integer
-                                        
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO wallet_token_interactions (
-                                                chain_id, token_id, wallet_id, 
-                                                first_interaction, last_interaction, 
-                                                last_balance_token, interaction_count
-                                            )
-                                            VALUES (%s, %s, %s, %s, %s, %s, 1)
-                                            ON CONFLICT (token_id, wallet_id) DO UPDATE SET
-                                                last_interaction = EXCLUDED.last_interaction,
-                                                last_balance_token = EXCLUDED.last_balance_token,
-                                                interaction_count = wallet_token_interactions.interaction_count + 1
-                                            """,
-                                            (chain_id, token_id, wallet_id, block_time, block_time, raw_amount)
-                                        )
-                                        
                                     # --- 5. LEGACY WRITE (events) ---
                                     # (Existing code follows)
                                     try:
