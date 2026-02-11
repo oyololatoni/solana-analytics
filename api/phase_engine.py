@@ -10,6 +10,7 @@ Core question: "Is this token statistically positioned for asymmetric upside rig
 from api.db import get_db_connection
 from typing import List, Dict, Optional
 import statistics
+import asyncio
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +305,36 @@ async def analyze_token(mint: str, days: int = 7) -> Dict:
     }
 
 
-async def analyze_all_tokens(tokens: list, days: int = 7) -> List[Dict]:
+async def get_active_mints(days: int = 7) -> List[str]:
     """
-    Analyze all tracked tokens and return sorted by EV score descending.
+    Returns a list of all distinct token mints that have had activity
+    in the last N days.
     """
-    results = []
-    for mint in tokens:
-        result = await analyze_token(mint, days)
-        results.append(result)
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT DISTINCT token_mint FROM events WHERE block_time > NOW() - INTERVAL '%s days'",
+                (days,),
+            )
+            rows = await cur.fetchall()
+    return [row[0] for row in rows]
+
+
+async def analyze_all_tokens(mints: Optional[List[str]] = None, days: int = 7) -> List[Dict]:
+    """
+    Analyze tokens and return sorted by EV score descending.
+    If mints is None, discovers all active mints from the database.
+    Runs analysis in parallel.
+    """
+    if mints is None:
+        mints = await get_active_mints(days)
+
+    if not mints:
+        return []
+
+    # Run analysis in parallel
+    tasks = [analyze_token(mint, days) for mint in mints]
+    results = await asyncio.gather(*tasks)
 
     # Sort by EV score descending (best opportunities first)
     results.sort(key=lambda x: x["ev_score"], reverse=True)
