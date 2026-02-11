@@ -83,3 +83,65 @@ async def list_alerts():
                 )
                 for row in rows
             ]
+# ---------------------------------------------------------------------------
+# Phase Transition Alerts
+# ---------------------------------------------------------------------------
+
+async def check_phase_transitions():
+    """
+    Checks for recent transitions into High-EV phases:
+    - POST_DESTRUCTIVE
+    - ACCELERATION
+    """
+    from config import get_token_name
+    
+    high_ev_phases = {"POST_DESTRUCTIVE", "ACCELERATION"}
+    alerts_triggered = []
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # Get all tokens that have at least 2 history entries
+            # We look for tokens where the LATEST entry is High-EV
+            # and the PREVIOUS entry was DIFFERENT.
+            await cur.execute(
+                """
+                WITH RankedHistory AS (
+                    SELECT 
+                        token_mint, phase, ev_score, recorded_at,
+                        ROW_NUMBER() OVER (PARTITION BY token_mint ORDER BY recorded_at DESC) as rn
+                    FROM token_scores_history
+                )
+                SELECT 
+                    t1.token_mint, 
+                    t1.phase as current_phase, 
+                    t1.ev_score,
+                    t2.phase as prev_phase
+                FROM RankedHistory t1
+                JOIN RankedHistory t2 ON t1.token_mint = t2.token_mint AND t2.rn = 2
+                WHERE t1.rn = 1
+                  AND t1.phase IN ('POST_DESTRUCTIVE', 'ACCELERATION')
+                  AND t1.phase != t2.phase
+                  AND t1.recorded_at > NOW() - INTERVAL '1 hour' -- Only recent
+                """
+            )
+            rows = await cur.fetchall()
+
+            for row in rows:
+                mint, current, ev, prev = row
+                name = get_token_name(mint)
+                
+                msg = f"🚀 ALERT: {name} ({mint[:4]}..) entered {current} (EV: {ev}). Prev: {prev}"
+                print(msg) # Log to stdout for local dev
+                alerts_triggered.append(msg)
+                
+                # TODO: Slack Webhook Integration
+                # if os.environ.get("SLACK_WEBHOOK_URL"):
+                #     requests.post(url, json={"text": msg})
+    
+    return alerts_triggered
+
+@router.post("/check")
+async def trigger_phase_check():
+    """Manually trigger phase transition check."""
+    alerts = await check_phase_transitions()
+    return {"status": "ok", "alerts_sent": len(alerts), "messages": alerts}
