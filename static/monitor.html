@@ -572,12 +572,16 @@
                         </select>
                     </div>
                     <div class="filter-group">
-                        <label>Sort By</label>
-                        <select id="disc-sort">
-                            <option value="volume_24h">Volume</option>
-                            <option value="swap_count_24h">Swaps</option>
-                            <option value="price_change_24h">Growth</option>
-                        </select>
+                        <label>Min Growth %</label>
+                        <input id="disc-growth" type="number" placeholder="0" style="width: 60px;">
+                    </div>
+                    <div class="filter-group">
+                        <label>Min Ratio</label>
+                        <input id="disc-ratio" type="number" step="0.1" placeholder="0" style="width: 60px;">
+                    </div>
+                    <div class="filter-group">
+                        <label>Max Decline %</label>
+                        <input id="disc-decline" type="number" placeholder="100" style="width: 60px;">
                     </div>
                     <div style="flex: 1;"></div>
                     <button onclick="runDiscovery()"
@@ -761,13 +765,22 @@
         window.runDiscovery = async () => {
             const src = document.getElementById("disc-source").value;
             const sort = document.getElementById("disc-sort").value;
+            const growth = document.getElementById("disc-growth").value;
+            const ratio = document.getElementById("disc-ratio").value;
+            const decline = document.getElementById("disc-decline").value;
+
+            const filters = [];
+            if (growth) filters.push({ metric: "unique_growth", condition: "gt", value: parseFloat(growth) / 100 });
+            if (ratio) filters.push({ metric: "ratio", condition: "gt", value: parseFloat(ratio) });
+            if (decline) filters.push({ metric: "decline", condition: "lt", value: parseFloat(decline) / 100 });
+
             const tbody = document.getElementById("discovery-body");
             tbody.innerHTML = "<tr><td colspan='4'>Scanning...</td></tr>";
 
             try {
                 const res = await fetch(`${API_BASE}/screener/filter`, {
                     method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ source: src, sort_by: sort, sort_direction: "desc" })
+                    body: JSON.stringify({ source: src, sort_by: sort, sort_direction: "desc", filters: filters })
                 });
                 const data = await res.json();
                 tbody.innerHTML = "";

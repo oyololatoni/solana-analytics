@@ -17,27 +17,29 @@ import asyncio
 # 1. Data Layer — Pull daily snapshots from events table
 # ---------------------------------------------------------------------------
 
-async def get_daily_snapshots(mint: str, days: int = 7) -> List[Dict]:
-    """
-    Returns one row per day for the given token over the last N days.
-    Each row: { day, unique_makers, swap_count, volume }
-    """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
+            # Enhanced query to get repeat makers (wallets active today that were active yesterday)
             await cur.execute(
                 """
-                SELECT
-                    DATE(block_time) AS day,
-                    COUNT(DISTINCT wallet) AS unique_makers,
-                    COUNT(*) AS swap_count,
-                    COALESCE(SUM(amount), 0) AS volume
-                FROM events
-                WHERE token_mint = %s
-                  AND block_time > NOW() - INTERVAL '%s days'
-                GROUP BY DATE(block_time)
-                ORDER BY day ASC
+                WITH daily_wallets AS (
+                    SELECT DATE(block_time) as day, wallet
+                    FROM events
+                    WHERE token_mint = %s AND block_time > NOW() - INTERVAL '%s days'
+                    GROUP BY 1, 2
+                )
+                SELECT 
+                    curr.day, 
+                    COUNT(DISTINCT curr.wallet) as unique_makers,
+                    COUNT(*) FILTER (WHERE prev.wallet IS NOT NULL) as repeat_makers,
+                    (SELECT COUNT(*) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as swap_count,
+                    (SELECT COALESCE(SUM(amount), 0) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as volume
+                FROM daily_wallets curr
+                LEFT JOIN daily_wallets prev ON curr.wallet = prev.wallet AND prev.day = curr.day - INTERVAL '1 day'
+                GROUP BY curr.day
+                ORDER BY curr.day ASC
                 """,
-                (mint, days),
+                (mint, days + 1, mint, mint),
             )
             rows = await cur.fetchall()
 
@@ -45,8 +47,9 @@ async def get_daily_snapshots(mint: str, days: int = 7) -> List[Dict]:
         {
             "day": str(row[0]),
             "unique_makers": row[1],
-            "swap_count": row[2],
-            "volume": float(row[3]),
+            "repeat_makers": row[2],
+            "swap_count": row[3],
+            "volume": float(row[4]),
         }
         for row in rows
     ]
@@ -152,6 +155,9 @@ def compute_signals(snapshots: List[Dict]) -> Dict:
         # New: Growth State (Actionable Text)
         "growth_state": "Accelerating" if unique_growth_rate > 0.1 else "Stalling" if unique_growth_rate < -0.1 else "Stable",
         "exhaustion": "High" if decline_from_peak > 0.3 else "Low", 
+        
+        # New: Stickiness (Cohort health)
+        "stickiness": round(today["repeat_makers"] / today["unique_makers"], 4) if today["unique_makers"] > 0 else 0,
     }
 
 
@@ -294,9 +300,24 @@ async def analyze_token(mint: str, days: int = 7) -> Dict:
     ev_score = compute_ev_score(signals, phase)
     decision = get_decision_bias(ev_score, phase)
 
+    # Simple Time-in-Phase logic (reverse scan snapshots and classify each)
+    # In a real app we'd store phase history. Here we re-compute.
+    time_in_phase = 1
+    if len(snapshots) > 1:
+        # Check backward from yesterday
+        for i in range(len(snapshots)-2, -1, -1):
+            prev_signals = compute_signals(snapshots[:i+2])
+            if prev_signals.get("insufficient_data"): break
+            prev_phase = classify_phase(prev_signals)
+            if prev_phase == phase:
+                time_in_phase += 1
+            else:
+                break
+
     return {
         "mint": mint,
         "phase": phase,
+        "time_in_phase": time_in_phase,
         "ev_score": ev_score,
         "decision": decision,
         "signals": signals,
