@@ -190,38 +190,81 @@ from api.phase_engine import get_all_states, analyze_all_tokens, analyze_token
 @router.get("/phase/all")
 async def get_all_phases():
     """
-    Returns phase state for all tokens from the snapshot table.
-    Fast read — no computation. Call POST /analytics/refresh to update.
+    Returns generic phase state + V1 Scoring Engine results.
+    Joins 'token_state' (for phase info) with 'feature_snapshots' (for V1 scores).
     """
     from config import get_token_name
     from api.helius import fetch_token_metadata
 
-    states = await get_all_states()
-
-    # If snapshot table is empty, trigger a refresh
-    if not states:
-        results = await analyze_all_tokens(days=7)
-        for r in results:
-            mint = r["mint"]
-            name = get_token_name(mint)
-            if name == f"{mint[:4]}...{mint[-4:]}":
-                meta = fetch_token_metadata(mint)
-                if meta and meta.get("name"):
-                    name = meta["name"]
-            r["name"] = name
-        return results
-
-    # Attach names
-    for s in states:
-        mint = s["mint"]
-        name = get_token_name(mint)
-        if name == f"{mint[:4]}...{mint[-4:]}":
-            meta = fetch_token_metadata(mint)
-            if meta and meta.get("name"):
-                name = meta["name"]
-        s["name"] = name
-
-    return states
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # Join token_state (legacy phase info) with latest feature_snapshot (V1 score)
+            # We use tokens table to bridge mint (token_state) -> id (feature_snapshots)
+            await cur.execute(\"""
+                SELECT 
+                    ts.mint, 
+                    ts.phase, 
+                    ts.days_since_peak,
+                    ts.decision,
+                    -- V1 Scores (fallback to legacy if NULL, though logically distinct)
+                    fs.score_total as ev_score, 
+                    fs.score_momentum,
+                    fs.score_liquidity,
+                    fs.score_participation,
+                    fs.score_wallet,
+                    fs.score_label,
+                    fs.is_sniper_candidate,
+                    -- Pass through raw values for UI sparklines if needed
+                    ts.unique_makers,
+                    ts.usr,
+                    ts.vpu,
+                    ts.vpu_cv,
+                    ts.unique_growth,
+                    ts.volume_growth,
+                    ts.decline_from_peak
+                FROM token_state ts
+                JOIN tokens t ON t.mint = ts.mint
+                LEFT JOIN LATERAL (
+                    SELECT * 
+                    FROM feature_snapshots fs 
+                    WHERE fs.token_id = t.id 
+                      AND fs.feature_version = 1
+                    ORDER BY fs.detection_timestamp DESC
+                    LIMIT 1
+                ) fs ON true
+                ORDER BY fs.score_total DESC NULLS LAST
+            \""")
+            
+            rows = await cur.fetchall()
+            results = []
+            for r in rows:
+                results.append({
+                    "mint": r[0],
+                    "phase": r[1],
+                    "days_since_peak": r[2],
+                    "decision": r[3],
+                    # Map V1 score to "ev_score" for frontend compatibility, 
+                    # but also provide breakdown
+                    "ev_score": float(r[4]) if r[4] is not None else 0.0,
+                    "structural_score": float(r[5]) if r[5] is not None else 0.0, # Momentum
+                    "capital_score": float(r[6]) if r[6] is not None else 0.0,    # Liquidity
+                    "lifecycle_score": float(r[7]) if r[7] is not None else 0.0,  # Participation
+                    "wallet_score": float(r[8]) if r[8] is not None else 0.0,     # Wallet (New field)
+                    "score_label": r[9],
+                    "is_sniper_candidate": r[10],
+                    # Participation
+                    "unique_makers": r[11],
+                    "usr": float(r[12]) if r[12] is not None else 0.0,
+                    "vpu": float(r[13]) if r[13] is not None else 0.0,
+                    "vpu_cv": float(r[14]) if r[14] is not None else 0.0,
+                    # Growth
+                    "unique_growth": float(r[15]) if r[15] is not None else 0.0,
+                    "volume_growth": float(r[16]) if r[16] is not None else 0.0,
+                    "decline_from_peak": float(r[17]) if r[17] is not None else 0.0,
+                    "name": get_token_name(r[0]) # Attach name immediately
+                })
+        
+    return results
 
 @router.get("/phase/{mint}")
 async def get_token_phase(mint: str):
@@ -243,4 +286,3 @@ async def refresh_all_phases():
         "tokens_analyzed": len(results),
         "top_ev": results[0] if results else None,
     }
-
