@@ -4,10 +4,19 @@ import os
 import signal
 import psycopg
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from api import logger
 from api.db import init_db, close_db, get_db_connection
 from config import TRACKED_TOKENS
+
+# Chain Abstraction
+from chains.registry import registry
+from chains.solana_adapter import SolanaAdapter
+from chains.models import CanonicalTrade, CanonicalWalletInteraction
+
+# Register Adapters
+registry.register("solana", SolanaAdapter())
 
 # Configuration
 BATCH_SIZE = 50
