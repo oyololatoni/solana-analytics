@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solana Analytics | Phase Intelligence</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --card-hover: #334155;
+            --text-main: #e2e8f0;
+            --text-dim: #94a3b8;
+            --accent: #38bdf8;
+
+            --green: #4ade80;
+            --red: #f87171;
+            --yellow: #facc15;
+            --orange: #fb923c;
+
+            --border: #334155;
+
+            --phase-early: #38bdf8;
+            --phase-expansion: #4ade80;
+            --phase-hype: #facc15;
+            --phase-destructive: #f87171;
+            --phase-post: #22d3ee;
+            --phase-accum: #a78bfa;
+            --phase-unknown: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            font-size: 14px;
+        }
+
+        /* Layout */
+        .layout {
+            display: grid;
+            grid-template-columns: 360px 1fr;
+            grid-template-rows: 56px 1fr;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        @media (max-width: 1000px) {
+            .layout {
+                grid-template-columns: 1fr;
+                grid-template-rows: 56px auto 1fr;
+                height: auto;
+                overflow: auto;
+            }
+        }
+
+        /* Header */
+        header {
+            grid-column: 1 / -1;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 1.5rem;
+        }
+
+        .brand {
+            font-size: 1.1rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-badge {
+            font-size: 0.7rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .status-ok {
+            color: var(--green);
+            background: rgba(74, 222, 128, 0.15);
+        }
+
+        .status-err {
+            color: var(--red);
+            background: rgba(248, 113, 113, 0.15);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            background: var(--bg);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--card);
+        }
+
+        .sidebar-body {
+            padding: 1.5rem;
+            flex: 1;
+        }
+
+        .block-title {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.25rem;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+        }
+
+        /* Phase Block */
+        .phase-block {
+            margin-bottom: 2rem;
+        }
+
+        .phase-display {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .main-phase-badge {
+            display: inline-block;
+            padding: 0.3rem 0.8rem;
+            border-radius: 6px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .confidence-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            margin-top: 0.5rem;
+        }
+
+        .ev-large {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+
+        .asymmetry-text {
+            font-size: 0.8rem;
+            color: var(--accent);
+            margin-top: 0.5rem;
+            font-weight: 500;
+        }
+
+        /* Signal Block */
+        .signal-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.6rem;
+            font-size: 0.85rem;
+        }
+
+        .signal-label {
+            color: var(--text-dim);
+        }
+
+        .signal-val {
+            font-family: 'Roboto Mono', monospace;
+            font-weight: 600;
+        }
+
+        .signal-interpretation {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-left: 0.5rem;
+            font-style: italic;
+        }
+
+        /* Decision Bias */
+        .decision-CONSIDER {
+            color: var(--yellow);
+        }
+
+        .decision-BUY {
+            color: var(--green);
+        }
+
+        .decision-WATCH {
+            color: var(--accent);
+        }
+
+        .decision-AVOID {
+            color: var(--red);
+        }
+
+        .decision-WAIT {
+            color: var(--text-dim);
+        }
+
+        /* Main Content */
+        .main {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: #0f131a;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border);
+            background: var(--card);
+            padding: 0 1.5rem;
+        }
+
+        .tab {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-dim);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab:hover {
+            color: var(--text-main);
+        }
+
+        .tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .tab-panel {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .tab-panel.active {
+            display: flex;
+        }
+
+        /* Table */
+        .table-wrapper {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 0.85rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            color: var(--text-dim);
+            font-weight: 500;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
+            position: sticky;
+            top: 0;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        td {
+            padding: 0.85rem 1rem;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+            vertical-align: middle;
+            background: var(--card);
+        }
+
+        tr:hover td {
+            background: var(--card-hover);
+            cursor: pointer;
+        }
+
+        tr.selected td {
+            background: rgba(56, 189, 248, 0.1);
+            border-bottom-color: rgba(56, 189, 248, 0.3);
+        }
+
+        /* Badges */
+        .badge {
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .bg-early {
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--phase-early);
+        }
+
+        .bg-xp {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--phase-expansion);
+        }
+
+        .bg-hype {
+            background: rgba(250, 204, 21, 0.15);
+            color: var(--phase-hype);
+        }
+
+        .bg-dest {
+            background: rgba(248, 113, 113, 0.15);
+            color: var(--phase-destructive);
+        }
+
+        .bg-post {
+            background: rgba(34, 211, 238, 0.15);
+            color: var(--phase-post);
+        }
+
+        .bg-accum {
+            background: rgba(167, 139, 250, 0.15);
+            color: var(--phase-accum);
+        }
+
+        .bg-unk {
+            background: rgba(148, 163, 184, 0.1);
+            color: var(--phase-unknown);
+        }
+
+        .decision-badge {
+            border: 1px solid currentColor;
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.65rem;
+        }
+
+        .green {
+            color: var(--green);
+        }
+
+        .red {
+            color: var(--red);
+        }
+
+        .yellow {
+            color: var(--yellow);
+        }
+
+        .dim {
+            color: var(--text-dim);
+        }
+
+        .mono {
+            font-family: 'Roboto Mono', monospace;
+        }
+
+        /* Discovery Filters */
+        .filter-row {
+            display: flex;
+            gap: 1rem;
+            padding: 1rem;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+        }
+
+        .filter-group label {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+
+        .filter-group select,
+        .filter-group input {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.4rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="layout">
+        <!-- Header -->
+        <header>
+            <div class="brand"><span style="color: var(--accent);">⚡</span> Phase Intelligence</div>
+            <div style="display: flex; gap: 1rem; align-items: center;">
+                <span class="status-badge status-ok" id="connection-status">ONLINE</span>
+            </div>
+        </header>
+
+        <!-- Sidebar (Decision Engine) -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <input type="hidden" id="selected-mint">
+                <div id="detail-name" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.2rem;">Select Token
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div id="detail-mint" class="mono dim" style="font-size: 0.75rem;">—</div>
+                    <a id="detail-dex-link" href="#" target="_blank"
+                        style="font-size: 0.75rem; color: var(--accent); text-decoration: none;">DexScreener ↗</a>
+                </div>
+            </div>
+
+            <div class="sidebar-body">
+                <!-- A. Phase Status Block -->
+                <div class="phase-block">
+                    <div class="block-title">Phase Status</div>
+                    <div class="phase-display">
+                        <span id="detail-phase-badge" class="main-phase-badge bg-unk">NO DATA</span>
+                        <div class="asymmetry-text" id="detail-asymmetry">—</div>
+                        <div class="confidence-row">
+                            <span>EV Score</span>
+                            <span id="detail-ev" class="ev-large" style="color: var(--text-dim);">0.00</span>
+                        </div>
+                        <div class="confidence-row" style="margin-top: 0.2rem;">
+                            <span>Decision Bias</span>
+                            <span id="detail-bias" class="decision-badge decision-WAIT">WAIT</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- B. Participation Health -->
+                <div style="margin-bottom: 2rem;">
+                    <div class="block-title">Participation Health</div>
+                    <div class="signal-row">
+                        <span class="signal-label">Uniques</span>
+                        <div>
+                            <span id="sig-uniques" class="signal-val">—</span>
+                        </div>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">U/S Ratio</span>
+                        <div style="text-align: right;">
+                            <span id="sig-ratio" class="signal-val">—</span>
+                            <span id="int-ratio" class="signal-interpretation"></span>
+                        </div>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Vol / Unique</span>
+                        <div style="text-align: right;">
+                            <span id="sig-vpu" class="signal-val">—</span>
+                            <span id="int-vpu" class="signal-interpretation"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- C. Momentum & Acceleration -->
+                <div style="margin-bottom: 2rem;">
+                    <div class="block-title">Momentum (2d)</div>
+                    <div class="signal-row">
+                        <span class="signal-label">Unique Growth</span>
+                        <span id="sig-ugr" class="signal-val">—</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Swap Accel</span>
+                        <span id="sig-sa" class="signal-val">—</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">State</span>
+                        <span id="sig-state"
+                            style="font-weight: 600; font-size: 0.8rem; color: var(--text-dim);">—</span>
+                    </div>
+                </div>
+
+                <!-- D. Exhaustion & Risk -->
+                <div>
+                    <div class="block-title">Exhaustion & Risk</div>
+                    <div class="signal-row">
+                        <span class="signal-label">Decline from Peak</span>
+                        <span id="sig-decline" class="signal-val red">—</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Days Since Peak</span>
+                        <span id="sig-dsp" class="signal-val">—</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Exhaustion Level</span>
+                        <span id="sig-exhaust" class="signal-val">—</span>
+                    </div>
+                </div>
+
+                <!-- Alert Form (Mini) -->
+                <div style="margin-top: 2rem; border-top: 1px solid var(--border); padding-top: 1rem;">
+                    <div class="block-title">Set Alert</div>
+                    <form onsubmit="createAlert(event)" style="display: flex; gap: 0.5rem;">
+                        <select id="alert-metric"
+                            style="flex:1; background:var(--bg); color:white; border:1px solid var(--border); padding:0.3rem;">
+                            <option value="swap_count_1h">Swaps > Limit</option>
+                        </select>
+                        <input id="alert-val" placeholder="Value"
+                            style="width: 60px; background:var(--bg); color:white; border:1px solid var(--border); padding:0.3rem;">
+                        <button
+                            style="background:var(--accent); border:none; border-radius:3px; font-weight:700;">+</button>
+                    </form>
+                    <div id="alert-msg" style="font-size:0.7rem; margin-top:0.3rem;"></div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main">
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('phase-tab')">Phase Rankings</div>
+                <div class="tab" onclick="switchTab('discovery-tab')">Structural Discovery</div>
+            </div>
+
+            <!-- TAB 1: Phase Rankings -->
+            <div id="phase-tab" class="tab-panel active">
+                <div class="table-wrapper">
+                    <table id="rankings-table">
+                        <thead>
+                            <tr>
+                                <th>Token</th>
+                                <th>Phase</th>
+                                <th>EV Score</th>
+                                <th>Growth State</th>
+                                <th>Exhaustion</th>
+                                <th>Bias</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rankings-body"></tbody>
+                    </table>
+                    <div id="loading-msg" style="text-align: center; color: var(--text-dim); padding: 2rem;">Loading
+                        phase intelligence...</div>
+                </div>
+            </div>
+
+            <!-- TAB 2: Structural Discovery -->
+            <div id="discovery-tab" class="tab-panel">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label>Source</label>
+                        <select id="disc-source">
+                            <option value="local">Tracked</option>
+                            <option value="external">DexScreener</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Sort By</label>
+                        <select id="disc-sort">
+                            <option value="volume_24h">Volume</option>
+                            <option value="swap_count_24h">Swaps</option>
+                            <option value="price_change_24h">Growth</option>
+                        </select>
+                    </div>
+                    <div style="flex: 1;"></div>
+                    <button onclick="runDiscovery()"
+                        style="background: var(--accent); border: none; padding: 0.5rem 1rem; border-radius: 4px; font-weight: 600;">Run
+                        Scan</button>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Token</th>
+                                <th>Volume (24h)</th>
+                                <th>Growth (24h)</th>
+                                <th>Swaps</th>
+                            </tr>
+                        </thead>
+                        <tbody id="discovery-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let selectedMint = null;
+
+        async function init() {
+            loadRankings();
+            setInterval(loadRankings, 30000);
+        }
+
+        async function loadRankings() {
+            try {
+                const res = await fetch(`${API_BASE}/analytics/phase/all`);
+                const data = await res.json();
+                const tbody = document.getElementById("rankings-body");
+                tbody.innerHTML = "";
+                document.getElementById("loading-msg").style.display = "none";
+
+                if (data.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No tracked tokens yet.</td></tr>`;
+                    return;
+                }
+
+                data.forEach(t => {
+                    const row = document.createElement("tr");
+                    if (t.mint === selectedMint) row.classList.add("selected");
+                    row.onclick = () => selectToken(t);
+
+                    const sig = t.signals || {};
+                    const evColor = getEvColor(t.ev_score);
+                    const phaseClass = getPhaseClass(t.phase);
+
+                    // Signals
+                    const growthState = sig.growth_state || "—";
+                    const exhaust = sig.exhaustion || "—";
+                    const bias = t.decision || "WAIT";
+                    const biasClass = `decision-${bias}`;
+
+                    row.innerHTML = `
+                        <td>
+                            <div style="font-weight:700;">${t.name || "Unknown"}</div>
+                            <div class="mono dim" style="font-size:0.7rem;">${t.mint.slice(0, 4)}...</div>
+                        </td>
+                        <td><span class="badge ${phaseClass}">${formatPhase(t.phase)}</span></td>
+                        <td>
+                            <div style="display:flex; align-items:center; gap:0.5rem;">
+                                <span class="mono" style="color:${evColor}; font-weight:700;">${t.ev_score.toFixed(2)}</span>
+                                <div style="width:40px; height:4px; background:#334155; border-radius:2px;"><div style="width:${t.ev_score * 100}%; height:100%; background:${evColor}; border-radius:2px;"></div></div>
+                            </div>
+                        </td>
+                        <td style="font-size:0.8rem;">${growthState}</td>
+                        <td style="font-size:0.8rem; color:${exhaust === "High" ? "var(--red)" : "var(--text-dim)"};">${exhaust}</td>
+                        <td><span class="decision-badge ${biasClass}">${bias}</span></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+
+                if (!selectedMint && data.length > 0) selectToken(data[0]);
+            } catch (e) { console.error(e); }
+        }
+
+        function selectToken(t) {
+            selectedMint = t.mint;
+            document.getElementById("selected-mint").value = t.mint;
+
+            // Highlight row
+            document.querySelectorAll("#rankings-body tr").forEach(r => r.classList.remove("selected"));
+            // (Re-render handles highlighting, but we can do it manually if needed)
+
+            // Header
+            document.getElementById("detail-name").textContent = t.name || "Unknown";
+            document.getElementById("detail-mint").textContent = t.mint;
+            document.getElementById("detail-dex-link").href = `https://dexscreener.com/solana/${t.mint}`;
+
+            // Phase Block
+            const badge = document.getElementById("detail-phase-badge");
+            badge.className = `main-phase-badge ${getPhaseClass(t.phase)}`;
+            badge.textContent = formatPhase(t.phase);
+
+            const evEl = document.getElementById("detail-ev");
+            evEl.textContent = t.ev_score.toFixed(2);
+            evEl.style.color = getEvColor(t.ev_score);
+
+            const biasEl = document.getElementById("detail-bias");
+            biasEl.textContent = t.decision || "WAIT";
+            biasEl.className = `decision-badge decision-${t.decision || "WAIT"}`;
+
+            const asymEl = document.getElementById("detail-asymmetry");
+            if (t.ev_score > 0.7) asymEl.textContent = "High Upside Potential";
+            else if (t.ev_score < 0.3) asymEl.textContent = "High Risk / Avoid";
+            else asymEl.textContent = "Neutral Structure";
+            asymEl.style.color = getEvColor(t.ev_score);
+
+            // Signals
+            const sig = t.signals || {};
+
+            // Participation
+            setVal("sig-uniques", sig.unique_makers);
+            setVal("sig-ratio", sig.unique_to_swap_ratio, 2);
+            setVal("sig-vpu", sig.volume_per_unique, 0, "$");
+
+            // Interpretations
+            const r = sig.unique_to_swap_ratio;
+            document.getElementById("int-ratio").textContent = (!r) ? "" : r > 0.4 ? "High churn" : r < 0.15 ? "Healthy holding" : "Normal";
+
+            // Momentum
+            setDelta("sig-ugr", sig.unique_growth_rate);
+            setDelta("sig-sa", sig.swap_acceleration);
+            document.getElementById("sig-state").textContent = sig.growth_state || "—";
+
+            // Exhaustion
+            setVal("sig-decline", sig.decline_from_peak, 2, "", "%");
+            setVal("sig-dsp", sig.days_since_peak);
+            document.getElementById("sig-exhaust").textContent = sig.exhaustion || "—";
+            document.getElementById("sig-exhaust").style.color = sig.exhaustion === "High" ? "var(--red)" : "var(--green)";
+        }
+
+        // Helpers
+        function getPhaseClass(p) {
+            if (p === "EARLY_EXPANSION") return "bg-early";
+            if (p === "EXPANSION") return "bg-xp";
+            if (p === "LATE_HYPE") return "bg-hype";
+            if (p === "DESTRUCTIVE") return "bg-dest";
+            if (p === "POST_DESTRUCTIVE") return "bg-post";
+            if (p === "ACCUMULATING") return "bg-accum";
+            return "bg-unk";
+        }
+        function formatPhase(p) { return p ? p.replace('_', ' ') : "UNKNOWN"; }
+        function getEvColor(s) { return s > 0.7 ? "var(--green)" : s > 0.4 ? "var(--yellow)" : "var(--red)"; }
+
+        function setVal(id, v, dec = 0, pre = "", suf = "") {
+            const el = document.getElementById(id);
+            if (v === undefined || v === null) el.textContent = "—";
+            else el.textContent = pre + v.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }) + suf;
+        }
+        function setDelta(id, v) {
+            const el = document.getElementById(id);
+            if (v === undefined || v === null) { el.textContent = "—"; el.style.color = "var(--text-dim)"; return; }
+            const arrow = v > 0 ? "↑" : v < 0 ? "↓" : "";
+            el.textContent = `${arrow} ${(v * 100).toFixed(1)}%`;
+            el.style.color = v > 0.1 ? "var(--green)" : v < -0.1 ? "var(--red)" : "var(--text-dim)";
+        }
+
+        // Tabs
+        window.switchTab = (id) => {
+            document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+            document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active")); // fixed class removal
+            // Simple approach: assume order matches or use IDs
+            if (id === 'phase-tab') {
+                document.querySelector(".tab:first-child").classList.add("active");
+                document.getElementById("phase-tab").classList.add("active");
+            } else {
+                document.querySelector(".tab:last-child").classList.add("active");
+                document.getElementById("discovery-tab").classList.add("active");
+            }
+        };
+
+        // Discovery (Simplified for redundancy)
+        window.runDiscovery = async () => {
+            const src = document.getElementById("disc-source").value;
+            const sort = document.getElementById("disc-sort").value;
+            const tbody = document.getElementById("discovery-body");
+            tbody.innerHTML = "<tr><td colspan='4'>Scanning...</td></tr>";
+
+            try {
+                const res = await fetch(`${API_BASE}/screener/filter`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ source: src, sort_by: sort, sort_direction: "desc" })
+                });
+                const data = await res.json();
+                tbody.innerHTML = "";
+                data.forEach(t => {
+                    const row = document.createElement("tr");
+                    const vol = t.volume_24h ? "$" + Math.round(t.volume_24h).toLocaleString() : "$0";
+                    const chg = (t.price_change_24h || 0).toFixed(2) + "%";
+                    const col = (t.price_change_24h || 0) > 0 ? "green" : "red";
+                    row.innerHTML = `
+                        <td><div style="font-weight:700;">${t.name}</div><div class="mono dim" style="font-size:0.7rem;">${t.mint.slice(0, 4)}...</div></td>
+                        <td class="mono">${vol}</td>
+                        <td class="mono ${col}">${chg}</td>
+                        <td class="mono">${(t.swap_count_24h || 0).toLocaleString()}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (e) { tbody.innerHTML = "<tr><td colspan='4'>Error loading data.</td></tr>"; }
+        };
+
+        // Alert
+        window.createAlert = async (e) => {
+            e.preventDefault();
+            const mint = document.getElementById("selected-mint").value;
+            const val = document.getElementById("alert-val").value;
+            if (!mint || !val) return;
+            try {
+                await fetch(`${API_BASE}/alerts/`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token_mint: mint, metric: "swap_count_1h", condition: "gt", value: parseFloat(val), cooldown_minutes: 60 })
+                });
+                document.getElementById("alert-msg").textContent = "Alert set!";
+                document.getElementById("alert-msg").style.color = "var(--green)";
+            } catch (e) { document.getElementById("alert-msg").textContent = "Error"; }
+        };
+
+        init();
+    </script>
+</body>
+
+</html>

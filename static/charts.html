@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solana Analytics | Charts</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #e2e8f0;
+            --accent: #38bdf8;
+            --green: #4ade80;
+            --red: #f87171;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        .btn {
+            background: var(--card);
+            color: var(--text);
+            padding: 0.5rem 1rem;
+            text-decoration: none;
+            border-radius: 0.25rem;
+            border: 1px solid #334155;
+            font-size: 0.875rem;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+        }
+
+        select {
+            padding: 0.5rem;
+            background: var(--card);
+            color: white;
+            border: 1px solid #334155;
+            border-radius: 0.25rem;
+        }
+
+        .chart-container {
+            background: var(--card);
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            border: 1px solid #334155;
+            margin-bottom: 2rem;
+            height: 400px;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 1.25rem;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>Token Trends</h1>
+        <div class="controls">
+            <select id="token-select" onchange="loadCharts()">
+                <option>Loading...</option>
+            </select>
+            <select id="window-select" onchange="loadCharts()">
+                <option value="24h">Last 24 Hours</option>
+                <option value="7d">Last 7 Days</option>
+                <option value="30d">Last 30 Days</option>
+            </select>
+            <select id="bucket-select" onchange="loadCharts()">
+                <option value="1h">Hourly</option>
+                <option value="4h">4-Hour</option>
+                <option value="1d">Daily</option>
+            </select>
+            <a href="/" class="btn">Back to Monitor</a>
+        </div>
+    </div>
+
+    <!-- Volume Chart -->
+    <div class="chart-container">
+        <h2>Volume (Buy vs Sell)</h2>
+        <canvas id="volumeChart"></canvas>
+    </div>
+
+    <!-- Makers Chart -->
+    <div class="chart-container">
+        <h2>Participation (Unique Makers)</h2>
+        <canvas id="makersChart"></canvas>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        let volChartInstance = null;
+        let makersChartInstance = null;
+
+        async function initTokens() {
+            try {
+                const res = await fetch(`${API_BASE}/analytics/tokens`);
+                const tokens = await res.json();
+                const select = document.getElementById("token-select");
+                select.innerHTML = "";
+
+                const urlParams = new URLSearchParams(window.location.search);
+                const tokenFromUrl = urlParams.get('token');
+
+                tokens.forEach(t => {
+                    const opt = document.createElement("option");
+                    opt.value = t.mint;
+                    opt.text = t.name;
+                    select.appendChild(opt);
+                });
+
+                if (tokenFromUrl) {
+                    // Check if token exists in list (by mint)
+                    const exists = tokens.some(t => t.mint === tokenFromUrl);
+                    if (exists) select.value = tokenFromUrl;
+                }
+
+                loadCharts();
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadCharts() {
+            const select = document.getElementById("token-select");
+            if (!select.value) return;
+            const mint = select.value;
+
+            const windowVal = document.getElementById("window-select").value;
+            const bucketVal = document.getElementById("bucket-select").value;
+
+            try {
+                const res = await fetch(`${API_BASE}/analytics/timeseries?mint=${mint}&window=${windowVal}&bucket=${bucketVal}`);
+                if (!res.ok) throw new Error("API Error");
+
+                const json = await res.json();
+                const data = json.data;
+
+                // Prepare Data
+                const labels = data.map(d => new Date(d.start).toLocaleString(undefined, {
+                    month: 'short', day: 'numeric', hour: 'numeric'
+                }));
+                const volBuy = data.map(d => d.volume_buy);
+                const volSell = data.map(d => d.volume_sell);
+                const makers = data.map(d => d.unique_makers);
+
+                renderVolumeChart(labels, volBuy, volSell);
+                renderMakersChart(labels, makers);
+
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderVolumeChart(labels, buy, sell) {
+            const ctx = document.getElementById('volumeChart').getContext('2d');
+
+            if (volChartInstance) volChartInstance.destroy();
+
+            volChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Buy Volume',
+                            data: buy,
+                            backgroundColor: '#4ade80',
+                            stack: 'Stack 0',
+                        },
+                        {
+                            label: 'Sell Volume',
+                            data: sell,
+                            backgroundColor: '#f87171',
+                            stack: 'Stack 0',
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+                        y: { stacked: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#e2e8f0' } }
+                    }
+                }
+            });
+        }
+
+        function renderMakersChart(labels, makers) {
+            const ctx = document.getElementById('makersChart').getContext('2d');
+
+            if (makersChartInstance) makersChartInstance.destroy();
+
+            makersChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Unique Makers',
+                        data: makers,
+                        borderColor: '#38bdf8',
+                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+                        y: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' }, beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // Init
+        initTokens();
+    </script>
+</body>
+
+</html>
