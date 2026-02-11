@@ -313,13 +313,19 @@ async def track_token(req: TrackRequest):
                 from datetime import datetime, timezone
                 await cur.execute(
                     """
-                    INSERT INTO events (tx_signature, slot, event_type, wallet, token_mint, amount, block_time, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO events (
+                        tx_signature, slot, event_type, wallet, 
+                        token_mint, amount, raw_amount, decimals, 
+                        block_time, program_id, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         f"INIT_{req.mint[:8]}_{datetime.now().timestamp()}", 
-                        0, "init", "SYSTEM", req.mint, 0, 
+                        0, "init", "SYSTEM", 
+                        req.mint, 0, 0, 9,
                         datetime.now(timezone.utc), 
+                        "SYSTEM_INIT",
                         json.dumps({"name": req.name, "note": "Manually tracked"})
                     )
                 )
