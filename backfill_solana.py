@@ -52,18 +52,8 @@ async def backfill(limit_per_page=100, max_pages=50):
         await init_db()
 
     try:
+        # For this test, we skip the gt_time check to ensure we get a clean 7-day windows
         gt_time = None
-        if not DRY_RUN:
-            async with get_db_connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT MAX(block_time) FROM events WHERE token_mint = %s",
-                        (TOKEN_MINT,)
-                    )
-                    row = await cur.fetchone()
-                    if row and row[0]:
-                        last_ts = row[0]
-                        gt_time = int(last_ts.timestamp())
         
         params = {
             "api-key": HELIUS_API_KEY,
