@@ -37,21 +37,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Run Schema Migrations
-      env:
-        DATABASE_URL: postgresql://postgres:password@localhost:5432/test_db
-      run: |
-        # Apply migrations manually for testing CI
-        for f in schema/*.sql; do
-          psql $DATABASE_URL -f "$f"
-        done
-        
-    - name: Run Preflight
+    - name: Run Deployment Gate (Migrations + Preflight)
       env:
         DATABASE_URL: postgresql://postgres:password@localhost:5432/test_db
         HELIUS_WEBHOOK_SECRET: test_secret
         TRACKED_TOKENS: test_token
-      run: python preflight.py
+      run: python tools/deploy.py --db-only
       
     - name: Run Tests
       env:
