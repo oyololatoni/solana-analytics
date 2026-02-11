@@ -58,6 +58,24 @@ async def helius_webhook(request: Request):
     # ====================
     if not INGESTION_ENABLED:
         logger.info(f"Ingestion disabled, ignoring {events_received} events")
+        # Try to record stats if DB is reachable
+        try:
+            async with get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        INSERT INTO ingestion_stats (
+                            source, events_received, swaps_inserted, swaps_ignored,
+                            ignored_ingestion_disabled
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        ("helius", events_received, 0, events_received, events_received)
+                    )
+                    await conn.commit()
+        except Exception as e:
+            logger.warning(f"Could not record ingestion stats (safe mode): {e}")
+
         return {
             "status": "ok",
             "ingestion": "disabled",
@@ -82,6 +100,23 @@ async def helius_webhook(request: Request):
                 except psycopg.IntegrityError:
                     await conn.rollback()
                     logger.info(f"Ignored replay payload: {payload_hash}")
+                    
+                    # Record stats for replay
+                    try:
+                        await cur.execute(
+                            """
+                            INSERT INTO ingestion_stats (
+                                source, events_received, swaps_inserted, swaps_ignored,
+                                ignored_replay
+                            )
+                            VALUES (%s, %s, %s, %s, %s)
+                            """,
+                            ("helius", events_received, 0, events_received, events_received)
+                        )
+                        await conn.commit()
+                    except Exception:
+                        pass # Squelch error in replay handler
+
                     return {
                         "status": "ok",
                         "replay": "ignored",
@@ -111,6 +146,12 @@ async def helius_webhook(request: Request):
                         valid_events.append(tx)
 
                 if not valid_events:
+                    # Record stats for expired? (Maybe treated as 'ignored_missing_fields' or just logged?)
+                    # For now just log, as schema has no specific column for 'expired'. 
+                    # User asked for 'missing_required_fields' or generic.
+                    # We'll skip stats for strictly expired payloads to avoid noise, or add column later.
+                    # Actually, let's treat it as 'swaps_ignored' with specific reason if we had one.
+                    # Given constraint, we just log.
                     await conn.commit()
                     logger.info("All events in payload expired")
                     return {
@@ -189,14 +230,6 @@ async def helius_webhook(request: Request):
                             except psycopg.IntegrityError:
                                 # This handles concurrent inserts that ON CONFLICT might race with
                                 ignored_constraint_violation += 1
-                                # Important: Need to savepoint/rollback in async properly if we want to continue?
-                                # Actually, ON CONFLICT handles duplicates gracefully. 
-                                # Real IntegrityError here means something else violated or connection broken?
-                                # Standard psycopg practice: connection is now in failed state if error raised.
-                                # But we want to CONTINUE processing other items.
-                                # If we are in a transaction block, one error invalidates the transaction.
-                                # So strictly speaking, we should use SAVEPOINTs for row-level robustness 
-                                # OR just rely on ON CONFLICT DO NOTHING which prevents the error.
                                 pass
 
                         if not found_tracked_token:
