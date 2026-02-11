@@ -9,6 +9,7 @@ from api.webhooks import router as webhooks_router
 from api.analytics import router as analytics_router
 from api.alerts import router as alerts_router
 from api.screener import router as screener_router
+from api.routers.features import router as features_router
 from config import TRACKED_TOKENS, INGESTION_ENABLED
 
 if not TRACKED_TOKENS:
@@ -49,3 +50,4 @@ app.include_router(webhooks_router)
 app.include_router(analytics_router)
 app.include_router(alerts_router)
 app.include_router(screener_router)
+app.include_router(features_router, prefix="/features", tags=["features"])
