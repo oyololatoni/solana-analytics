@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import os
@@ -29,10 +30,98 @@ def handle_signal():
     logger.info("Shutdown signal received, stopping worker...")
     shutdown_event.set()
 
+async def ensure_token_id(cur, chain_id, address, timestamp, cache):
+    if address in cache:
+        return cache[address]
+    
+    await cur.execute(
+        """
+        INSERT INTO tokens (chain_id, address, created_at_chain)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (chain_id, address) DO UPDATE 
+        SET address = EXCLUDED.address
+        RETURNING id
+        """,
+        (chain_id, address, timestamp)
+    )
+    row = await cur.fetchone()
+    if row:
+        token_id = row[0]
+        cache[address] = token_id
+        return token_id
+    return None
+
+async def upsert_wallet_interaction(cur, chain_id, token_id, event):
+    # Upsert Profile
+    await cur.execute(
+        """
+        INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (chain_id, address) DO UPDATE
+        SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
+        RETURNING id
+        """,
+        (chain_id, event.wallet_address, event.timestamp, event.timestamp)
+    )
+    wallet_row = await cur.fetchone()
+    if not wallet_row: return
+    
+    wallet_id = wallet_row[0]
+    
+    # Upsert Interaction
+    await cur.execute(
+        """
+        INSERT INTO wallet_token_interactions (
+            chain_id, token_id, wallet_id, first_interaction, last_interaction,
+            last_balance_token
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (token_id, wallet_id) DO UPDATE
+        SET 
+            last_interaction = EXCLUDED.last_interaction,
+            last_balance_token = EXCLUDED.last_balance_token,
+            interaction_count = wallet_token_interactions.interaction_count + 1
+        """,
+        (chain_id, token_id, wallet_id, event.timestamp, event.timestamp, event.last_balance_token)
+    )
+
+async def insert_trade(cur, chain_id, token_id, event):
+    # Upsert Profile
+    await cur.execute(
+        """
+        INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (chain_id, address) DO UPDATE
+        SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
+        """,
+        (chain_id, event.wallet_address, event.timestamp, event.timestamp)
+    )
+    
+    # Insert Trade
+    try:
+        await cur.execute(
+            """
+            INSERT INTO trades (
+                chain_id, token_id, tx_signature, wallet_address,
+                side, amount_token, amount_sol, slot, timestamp
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (chain_id, tx_signature, timestamp) DO NOTHING
+            """,
+            (
+                chain_id, token_id, event.tx_signature, event.wallet_address,
+                event.side, event.amount_token, event.amount_sol, event.slot, event.timestamp
+            )
+        )
+        return cur.rowcount > 0
+    except psycopg.Error as e:
+        logger.error(f"Failed to insert trade {event.tx_signature}: {e}")
+        return False
+
 async def process_batch():
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
-            # Fetch pending jobs with locking
+            # Fetch pending jobs
             await cur.execute(
                 """
                 SELECT id, payload, created_at, source 
@@ -51,287 +140,103 @@ async def process_batch():
 
             logger.info(f"Worker processing {len(jobs)} jobs...")
             
-            # --- PRE-FETCH CHAIN ID ---
-            # We assume 'solana' exists from migration seeding.
+            # --- Chain Setup ---
+            # Assume 'solana' exists or seed it
             await cur.execute("SELECT id FROM chains WHERE name = 'solana'")
             chain_row = await cur.fetchone()
             if not chain_row:
-                # Fallback if not seeded
                 await cur.execute("INSERT INTO chains (name) VALUES ('solana') RETURNING id")
-                chain_row = await cur.fetchone()
-            chain_id = chain_row[0]
-            
-            # Local cache for this batch to avoid repeated lookups
-            # mint -> token_id
+                chain_id = (await cur.fetchone())[0]
+            else:
+                chain_id = chain_row[0]
+
+            adapter = registry.get("solana")
             batch_token_ids = {}
 
-            for job_id, payload, created_at, source in jobs:
-                # Stats accumulation for this job
-                events_received = len(payload)
-                swaps_inserted = 0
-                swaps_ignored = 0
-                
-                # Granular counters
-                ignored_missing_fields = 0
-                ignored_no_swap_event = 0
-                ignored_no_tracked_tokens = 0
-                ignored_constraint_violation = 0
-                ignored_exception = 0
-
-                try:
-                    # Use a nested transaction (SAVEPOINT) for each job
-                    async with conn.transaction():
-                        for tx in payload:
-                            try:
-                                # 1. Basic Fields
-                                signature = tx.get("signature")
-                                slot = tx.get("slot")
-                                timestamp = tx.get("timestamp")
-
-                                if not signature or slot is None or timestamp is None:
-                                    ignored_missing_fields += 1
-                                    continue
-
-                                # --- 6. TOKEN BALANCE & LIQUIDITY (Advanced Ingestion) ---
-                                # Process this FIRST to capture all interactions, even without swap events
-                                balance_changes = tx.get("tokenBalanceChanges", [])
-                                if balance_changes:
-                                    logger.info(f"Processing {len(balance_changes)} balance changes")
-                                    for change in balance_changes:
-                                        mint = change.get("mint")
-                                        if mint not in TRACKED_TOKENS:
+            # Process Jobs
+            async with conn.transaction():
+                for job in jobs:
+                    job_id = job[0]
+                    payload = job[1]
+                    source = job[3]
+                    
+                    # Stats tracking
+                    events_received = 0
+                    swaps_inserted = 0
+                    ignored_no_tracked_tokens = 0
+                    ignored_exception = 0
+                    
+                    try:
+                        if isinstance(payload, list):
+                            events_received = len(payload)
+                            for raw_tx in payload:
+                                try:
+                                    # 1. Normalize via Adapter
+                                    canonical_events = adapter.normalize_tx(raw_tx)
+                                    
+                                    # 2. Process Canonical Events
+                                    found_tracked_token = False
+                                    
+                                    for event in canonical_events:
+                                        if event.token_address not in TRACKED_TOKENS:
                                             continue
                                         
-                                        wallet = change.get("userAccount")
-                                        if not wallet:
-                                            continue
+                                        found_tracked_token = True
+                                        
+                                        token_id = await ensure_token_id(
+                                            cur, chain_id, event.token_address, event.timestamp, batch_token_ids
+                                        )
+                                        if not token_id: continue
+
+                                        if isinstance(event, CanonicalWalletInteraction):
+                                            await upsert_wallet_interaction(cur, chain_id, token_id, event)
                                             
-                                        # Resolve Token ID (Reuse cache)
-                                        token_id = batch_token_ids.get(mint)
-                                        if not token_id:
-                                            logger.info(f"Resolving token ID for {mint} on chain {chain_id} (Balance Change)")
-                                            await cur.execute(
-                                                """
-                                                INSERT INTO tokens (chain_id, address, created_at_chain)
-                                                VALUES (%s, %s, %s)
-                                                ON CONFLICT (chain_id, address) DO UPDATE 
-                                                SET address = EXCLUDED.address
-                                                RETURNING id
-                                                """,
-                                                (chain_id, mint, block_time)
-                                            )
-                                            row = await cur.fetchone()
-                                            if row:
-                                                token_id = row[0]
-                                                batch_token_ids[mint] = token_id
-                                            else:
-                                                continue
+                                        elif isinstance(event, CanonicalTrade):
+                                            inserted = await insert_trade(cur, chain_id, token_id, event)
+                                            if inserted:
+                                                swaps_inserted += 1
 
-                                        # Upsert Wallet
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
-                                            VALUES (%s, %s, %s, %s)
-                                            ON CONFLICT (chain_id, address) DO UPDATE
-                                            SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
-                                            RETURNING id
-                                            """,
-                                            (chain_id, wallet, block_time, block_time)
-                                        )
-                                        wallet_id = (await cur.fetchone())[0]
+                                    if not found_tracked_token:
+                                        ignored_no_tracked_tokens += 1
 
-                                        # Update Interactions
-                                        raw_amount_obj = change.get("rawTokenAmount", {})
-                                        raw_amount = raw_amount_obj.get("tokenAmount", "0")
-                                        
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO wallet_token_interactions (
-                                                chain_id, token_id, wallet_id, 
-                                                first_interaction, last_interaction, 
-                                                last_balance_token, interaction_count
-                                            )
-                                            VALUES (%s, %s, %s, %s, %s, %s, 1)
-                                            ON CONFLICT (token_id, wallet_id) DO UPDATE SET
-                                                last_interaction = EXCLUDED.last_interaction,
-                                                last_balance_token = EXCLUDED.last_balance_token,
-                                                interaction_count = wallet_token_interactions.interaction_count + 1
-                                            """,
-                                            (chain_id, token_id, wallet_id, block_time, block_time, raw_amount)
-                                        )
+                                    # 3. Legacy Write (Raw JSON) - Optional/Safety
+                                    swap = raw_tx.get("events", {}).get("swap")
+                                    if swap:
+                                        signature = raw_tx.get("signature")
+                                        if signature:
+                                            try:
+                                                # Use block_time from tx if avail, else now
+                                                ts_raw = raw_tx.get("timestamp")
+                                                bt = datetime.fromtimestamp(ts_raw, tz=timezone.utc) if ts_raw else datetime.now(timezone.utc)
+                                                
+                                                await cur.execute(
+                                                    """
+                                                    INSERT INTO events (
+                                                        tx_signature, slot, event_type, wallet,
+                                                        token_mint, amount, block_time, program_id, metadata, direction
+                                                    )
+                                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                    ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
+                                                    """,
+                                                    (
+                                                        signature, raw_tx.get("slot"), "swap", 
+                                                        raw_tx.get("feePayer"), 
+                                                        "legacy", 0, 
+                                                        bt,
+                                                        swap.get("program", ""), 
+                                                        json.dumps(raw_tx), 
+                                                        "unknown"
+                                                    ),
+                                                )
+                                            except:
+                                                pass 
 
-                                # 2. Swap Event (Existing)
-                                swap = tx.get("events", {}).get("swap")
-                                if not swap:
-                                    ignored_no_swap_event += 1
-                                    continue
-                                
-                                block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-                                found_tracked_token = False
-                                inserted_for_tx = False
-
-                                # 3. Directional Swap Detection
-                                legs_to_process = []
-                                
-                                # Token Outputs = Wallet RECEIVED token (Buy / 'in')
-                                for leg in swap.get("tokenOutputs", []):
-                                    legs_to_process.append((leg, 'in'))
-                                    
-                                # Token Inputs = Wallet SENT token (Sell / 'out')
-                                for leg in swap.get("tokenInputs", []):
-                                    legs_to_process.append((leg, 'out'))
-                                
-                                for leg, direction in legs_to_process:
-                                    mint = leg.get("mint")
-                                    if mint not in TRACKED_TOKENS:
-                                        continue
-                                    
-                                    found_tracked_token = True
-                                    wallet = leg.get("userAccount")
-                                    # Handle rawTokenAmount potentially being None or nested
-                                    # Helius sometimes sends it as String or Object
-                                    raw_amount_obj = leg.get("rawTokenAmount")
-                                    amount_str = None
-                                    if isinstance(raw_amount_obj, dict):
-                                        amount_str = raw_amount_obj.get("tokenAmount")
-                                    elif isinstance(raw_amount_obj, str):
-                                        amount_str = raw_amount_obj
-                                    
-                                    try:
-                                        amount = float(amount_str) if amount_str else 0.0
-                                    except ValueError:
-                                        amount = 0.0
-
-                                    if amount <= 0:
-                                        continue
-
-                                    # Infer SOL amount (Naively for now)
-                                    amount_sol = 0.0
-                                    try:
-                                        if direction == 'in':
-                                            # Buy: Spent SOL (nativeInput)
-                                            native = swap.get("nativeInput")
-                                            if native and native.get("amount"):
-                                                amount_sol = float(native.get("amount")) / 1e9
-                                        else:
-                                            # Sell: Gained SOL (nativeOutput)
-                                            native = swap.get("nativeOutput")
-                                            if native and native.get("amount"):
-                                                amount_sol = float(native.get("amount")) / 1e9
-                                    except:
-                                        amount_sol = 0.0
-
-                                    # --- 4. PRODUCTION SCHEMA WRITE (trades, tokens, wallet_profiles) ---
-                                    
-                                    # A. Resolve Token ID
-                                    token_id = batch_token_ids.get(mint)
-                                    if not token_id:
-                                        # Deduplicate token insertion
-                                        # Use ON CONFLICT DO UPDATE to get ID reliably
-                                        logger.info(f"Resolving token ID for {mint} on chain {chain_id}")
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO tokens (chain_id, address, created_at_chain)
-                                            VALUES (%s, %s, %s)
-                                            ON CONFLICT (chain_id, address) DO UPDATE 
-                                            SET address = EXCLUDED.address -- No-op to return ID
-                                            RETURNING id
-                                            """,
-                                            (chain_id, mint, block_time)
-                                        )
-                                        row = await cur.fetchone()
-                                        if row:
-                                            token_id = row[0]
-                                            batch_token_ids[mint] = token_id
-                                            logger.info(f"Resolved token ID: {token_id}")
-                                        else:
-                                            logger.error(f"Failed to resolve token ID for {mint}")
-                                            continue
-
-                                    # B. Upsert Wallet Profile
-                                    # Only update last_seen if newer
-                                    # We don't need ID for trades table (it uses address text)
-                                    if wallet:
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
-                                            VALUES (%s, %s, %s, %s)
-                                            ON CONFLICT (chain_id, address) DO UPDATE
-                                            SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
-                                            """,
-                                            (chain_id, wallet, block_time, block_time)
-                                        )
-
-                                    # C. Insert Trade
-                                    side = 'buy' if direction == 'in' else 'sell'
-                                    try:
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO trades (
-                                                chain_id, token_id, tx_signature, wallet_address,
-                                                side, amount_token, amount_sol, slot, timestamp
-                                            )
-                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                            ON CONFLICT (chain_id, tx_signature, timestamp) DO NOTHING
-                                            """,
-                                            (
-                                                chain_id, token_id, signature, wallet,
-                                                side, amount, amount_sol, slot, block_time
-                                            )
-                                        )
-                                    except psycopg.Error as e:
-                                        # Log constraint violations or other errors
-                                        logger.error(f"Failed to insert trade {signature}: {e}")
-                                        raise e # DEBUG: Raise to see error in DB status
-
-
-                                    # --- 5. LEGACY WRITE (events) ---
-                                    # (Existing code follows)
-                                    try:
-                                        await cur.execute(
-                                            """
-                                            INSERT INTO events (
-                                                tx_signature, slot, event_type, wallet,
-                                                token_mint, amount, block_time, program_id, metadata, direction
-                                            )
-                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                            ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
-                                            """,
-                                            (
-                                                signature, slot, "swap", wallet, mint, amount,
-                                                block_time, swap.get("program", ""), json.dumps(tx), direction
-                                            ),
-                                        )
-                                        
-                                        if cur.rowcount == 1:
-                                            swaps_inserted += 1
-                                            inserted_for_tx = True
-                                        else:
-                                            # If events table rejects it (duplicate), we count it as ignored constraint
-                                            # But we successfully tried writing to trades.
-                                            pass
-                                            
-                                    except psycopg.IntegrityError:
-                                        ignored_constraint_violation += 1
-                                        pass
-
-                                if not found_tracked_token:
-                                    ignored_no_tracked_tokens += 1
-
-                            except Exception as tx_err:
-                                ignored_exception += 1
-                                logger.error(f"Error processing tx in job {job_id}: {tx_err}")
-
-                        # Total ignored calculation
-                        swaps_ignored = (
-                            ignored_missing_fields + 
-                            ignored_no_swap_event + 
-                            ignored_no_tracked_tokens + 
-                            ignored_constraint_violation + 
-                            ignored_exception
-                        )
+                                except Exception as e:
+                                    ignored_exception += 1
+                                    logger.error(f"Tx processing error: {e}")
 
                         # Insert Stats
+                        swaps_ignored = ignored_no_tracked_tokens + ignored_exception
                         try:
                             await cur.execute(
                                 """
@@ -340,43 +245,28 @@ async def process_batch():
                                     ignored_missing_fields, ignored_no_swap_event, ignored_no_tracked_tokens,
                                     ignored_constraint_violation, ignored_exception
                                 )
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (%s, %s, %s, %s, 0, 0, %s, 0, %s)
                                 """,
                                 (
                                     f"{source}-worker", events_received, swaps_inserted, swaps_ignored,
-                                    ignored_missing_fields, ignored_no_swap_event, ignored_no_tracked_tokens,
-                                    ignored_constraint_violation, ignored_exception
+                                    ignored_no_tracked_tokens, ignored_exception
                                 ),
                             )
-                        except Exception as stats_err:
-                            logger.warning(f"Failed to insert worker stats: {stats_err}")
+                        except Exception:
+                            pass
 
                         # Mark Job Completed
                         await cur.execute(
-                            """
-                            UPDATE raw_webhooks 
-                            SET status = 'processed', processed_at = NOW() 
-                            WHERE id = %s
-                            """,
+                            "UPDATE raw_webhooks SET status = 'processed', processed_at = NOW() WHERE id = %s",
                             (job_id,)
                         )
                 
                 except Exception as job_err:
-                    # Savepoint rolled back automatically. Lock is held by outer TX.
                     logger.error(f"Job {job_id} failed: {job_err}")
-                    # Mark status as failed in the outer transaction
-                    try:
-                        await cur.execute(
-                            """
-                            UPDATE raw_webhooks 
-                            SET status = 'failed', error_message = %s, processed_at = NOW() 
-                            WHERE id = %s
-                            """,
-                            (str(job_err), job_id)
-                        )
-                    except Exception as update_err:
-                         # If this fails, the whole batch fails, but logic is sound.
-                        logger.error(f"Failed to update job {job_id} failure status: {update_err}")
+                    await cur.execute(
+                        "UPDATE raw_webhooks SET status = 'failed', error_message = %s, processed_at = NOW() WHERE id = %s",
+                        (str(job_err), job_id)
+                    )
 
             await conn.commit()
             return len(jobs)
@@ -387,7 +277,12 @@ async def run_worker():
     
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, handle_signal)
-    loop.add_signal_handler(signal.SIGTERM, handle_signal)
+    
+    # Try SIGTERM, might fail on some OS/environments if not supported in loop
+    try:
+        loop.add_signal_handler(signal.SIGTERM, handle_signal)
+    except NotImplementedError:
+        pass
 
     logger.info("Worker running. Waiting for jobs...")
 
@@ -399,25 +294,22 @@ async def run_worker():
             count = await process_batch()
             if count == 0:
                 idle_polls += 1
-                # Exponential backoff: 1s -> 1.5s -> 2.25s -> ... -> 10s
                 poll_interval = min(POLL_INTERVAL * (1.5 ** (idle_polls - 1)), 10.0)
-                
                 try:
                     await asyncio.wait_for(shutdown_event.wait(), timeout=poll_interval)
                 except asyncio.TimeoutError:
                     pass
             else:
                 idle_polls = 0
-                # Yield briefly to let other tasks run (e.g. signal handlers)
                 await asyncio.sleep(0.05)
                 
         except Exception as e:
             logger.error(f"Worker loop error: {e}")
-            await asyncio.sleep(5)  # Backoff on DB error
-
-    logger.info("Worker shutting down...")
-    await close_db()
-    logger.info("Worker stopped.")
+            await asyncio.sleep(1.0)
 
 if __name__ == "__main__":
-    asyncio.run(run_worker())
+    logging.basicConfig(level=logging.INFO)
+    try:
+        asyncio.run(run_worker())
+    except KeyboardInterrupt:
+        pass
