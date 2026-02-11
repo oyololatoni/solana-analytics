@@ -190,17 +190,32 @@ from api.phase_engine import analyze_token, analyze_all_tokens
 @router.get("/phase/all")
 async def get_all_phases(days: int = 7):
     """
-    Returns phase classification + EV score for ALL tracked tokens,
+    Returns phase classification + EV score for ALL tokens active in DB,
     sorted by EV score descending (best opportunities first).
     """
-    from config import TRACKED_TOKENS, get_token_name
-    results = await analyze_all_tokens(list(TRACKED_TOKENS), days)
+    from config import get_token_name
+    from api.helius import fetch_token_metadata
     
-    # Attach human-readable names
-    for r in results:
-        r["name"] = get_token_name(r["mint"])
+    # Analyze all active tokens from DB
+    results = await analyze_all_tokens(days=days)
     
-    return results
+    # Attach human-readable names (cached/memoized in a real app, here simple loop)
+    # We limit to top 50 to avoid hammering metadata API if list is huge
+    top_results = results[:50]
+    
+    for r in top_results:
+        mint = r["mint"]
+        name = get_token_name(mint)
+        
+        # If name is just the truncated mint, try fetching real metadata
+        if name == f"{mint[:4]}...{mint[-4:]}":
+            meta = fetch_token_metadata(mint)
+            if meta and meta.get("name"):
+                name = meta["name"]
+        
+        r["name"] = name
+    
+    return top_results
 
 @router.get("/phase/{mint}")
 async def get_token_phase(mint: str, days: int = 7):
