@@ -608,6 +608,16 @@
                         <label>Max Decline %</label>
                         <input id="disc-decline" type="number" placeholder="100" style="width: 60px;">
                     </div>
+                    <div class="filter-group">
+                        <label>Sort By</label>
+                        <select id="disc-sort">
+                            <option value="volume_24h">Volume</option>
+                            <option value="swap_count_24h">Swaps</option>
+                            <option value="price_change_24h">24h Growth</option>
+                            <option value="unique_growth">Unique Growth</option>
+                            <option value="ratio">U/S Ratio</option>
+                        </select>
+                    </div>
                     <div style="flex: 1;"></div>
                     <button onclick="runDiscovery()"
                         style="background: var(--accent); border: none; padding: 0.5rem 1rem; border-radius: 4px; font-weight: 600;">Run
@@ -621,6 +631,7 @@
                                 <th>Volume (24h)</th>
                                 <th>Growth (24h)</th>
                                 <th>Swaps</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="discovery-body"></tbody>
@@ -833,10 +844,25 @@
                         <td class="mono">${vol}</td>
                         <td class="mono ${col}">${chg}</td>
                         <td class="mono">${(t.swap_count_24h || 0).toLocaleString()}</td>
+                        <td><button onclick="trackTokenFromDiscovery('${t.mint}', '${t.name.replace("'", "\\'")}')" style="background:#334155; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:0.7rem;">Track</button></td>
                     `;
                     tbody.appendChild(row);
                 });
             } catch (e) { tbody.innerHTML = "<tr><td colspan='4'>Error loading data.</td></tr>"; }
+        };
+
+        window.trackTokenFromDiscovery = async (mint, name) => {
+            try {
+                const res = await fetch(`${API_BASE}/screener/track`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ mint, name })
+                });
+                if (res.ok) {
+                    alert(`Now tracking ${name || mint}. Switching to Phase Rankings...`);
+                    switchTab('phase-tab');
+                    loadRankings();
+                }
+            } catch (e) { console.error("Track error:", e); }
         };
 
         // Alert
