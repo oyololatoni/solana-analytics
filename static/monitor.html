@@ -459,73 +459,60 @@
                     </div>
                 </div>
 
-                <!-- B. Participation Health -->
+                <!-- B. EV Score Components -->
                 <div style="margin-bottom: 2rem;">
-                    <div class="block-title">Participation Health</div>
+                    <div class="block-title">EV Components</div>
                     <div class="signal-row">
-                        <span class="signal-label">Uniques</span>
-                        <div>
-                            <span id="sig-uniques" class="signal-val">—</span>
-                        </div>
+                        <span class="signal-label">Structural (0-40)</span>
+                        <span id="sig-structural" class="signal-val">—</span>
                     </div>
                     <div class="signal-row">
-                        <span class="signal-label">U/S Ratio</span>
+                        <span class="signal-label">Capital (0-30)</span>
+                        <span id="sig-capital" class="signal-val">—</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Lifecycle (0-30)</span>
+                        <span id="sig-lifecycle" class="signal-val">—</span>
+                    </div>
+                </div>
+
+                <!-- C. Participation Metrics -->
+                <div style="margin-bottom: 2rem;">
+                    <div class="block-title">Participation</div>
+                    <div class="signal-row">
+                        <span class="signal-label">Uniques (48h)</span>
+                        <span id="sig-uniques" class="signal-val">—</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">USR</span>
                         <div style="text-align: right;">
                             <span id="sig-ratio" class="signal-val">—</span>
                             <span id="int-ratio" class="signal-interpretation"></span>
                         </div>
                     </div>
                     <div class="signal-row">
-                        <span class="signal-label">Vol / Unique</span>
+                        <span class="signal-label">VPU</span>
                         <div style="text-align: right;">
                             <span id="sig-vpu" class="signal-val">—</span>
-                            <span id="int-vpu" class="signal-interpretation"></span>
                         </div>
                     </div>
                     <div class="signal-row">
-                        <span class="signal-label">Stickiness</span>
-                        <div style="text-align: right;">
-                            <span id="sig-stick" class="signal-val">—</span>
-                            <span id="int-stick" class="signal-interpretation"></span>
-                        </div>
-                    </div>
-                    <div class="signal-row">
-                        <span class="signal-label">Buy Pressure</span>
-                        <div style="text-align: right;">
-                            <span id="sig-buy" class="signal-val">—</span>
-                            <span id="int-buy" class="signal-interpretation"></span>
-                        </div>
-                    </div>
-                    <div class="signal-row">
-                        <span class="signal-label">Liq. Shift</span>
-                        <div style="text-align: right;">
-                            <span id="sig-liq" class="signal-val">—</span>
-                            <span id="int-liq" class="signal-interpretation"></span>
-                        </div>
+                        <span class="signal-label">VPU Stability (CV)</span>
+                        <span id="sig-cv" class="signal-val">—</span>
                     </div>
                 </div>
 
-                <!-- C. Momentum & Acceleration -->
+                <!-- D. Growth & Risk -->
                 <div style="margin-bottom: 2rem;">
-                    <div class="block-title">Momentum (2d)</div>
+                    <div class="block-title">Growth & Risk</div>
                     <div class="signal-row">
-                        <span class="signal-label">Unique Growth</span>
+                        <span class="signal-label">Unique Growth (2d)</span>
                         <span id="sig-ugr" class="signal-val">—</span>
                     </div>
                     <div class="signal-row">
-                        <span class="signal-label">Swap Accel</span>
-                        <span id="sig-sa" class="signal-val">—</span>
+                        <span class="signal-label">Volume Growth (2d)</span>
+                        <span id="sig-vgr" class="signal-val">—</span>
                     </div>
-                    <div class="signal-row">
-                        <span class="signal-label">State</span>
-                        <span id="sig-state"
-                            style="font-weight: 600; font-size: 0.8rem; color: var(--text-dim);">—</span>
-                    </div>
-                </div>
-
-                <!-- D. Exhaustion & Risk -->
-                <div>
-                    <div class="block-title">Exhaustion & Risk</div>
                     <div class="signal-row">
                         <span class="signal-label">Decline from Peak</span>
                         <span id="sig-decline" class="signal-val red">—</span>
@@ -533,10 +520,6 @@
                     <div class="signal-row">
                         <span class="signal-label">Days Since Peak</span>
                         <span id="sig-dsp" class="signal-val">—</span>
-                    </div>
-                    <div class="signal-row">
-                        <span class="signal-label">Exhaustion Level</span>
-                        <span id="sig-exhaust" class="signal-val">—</span>
                     </div>
                 </div>
 
@@ -573,9 +556,10 @@
                             <tr>
                                 <th>Token</th>
                                 <th>Phase</th>
-                                <th>EV Score</th>
-                                <th>Growth State</th>
-                                <th>Exhaustion</th>
+                                <th>EV</th>
+                                <th>Structural</th>
+                                <th>Capital</th>
+                                <th>Lifecycle</th>
                                 <th>Bias</th>
                             </tr>
                         </thead>
@@ -668,15 +652,13 @@
                     if (t.mint === selectedMint) row.classList.add("selected");
                     row.onclick = () => selectToken(t);
 
-                    const sig = t.signals || {};
                     const evColor = getEvColor(t.ev_score);
                     const phaseClass = getPhaseClass(t.phase);
-
-                    // Signals
-                    const growthState = sig.growth_state || "—";
-                    const exhaust = sig.exhaustion || "—";
                     const bias = t.decision || "WAIT";
                     const biasClass = `decision-${bias}`;
+                    const struct = t.structural_score || 0;
+                    const cap = t.capital_score || 0;
+                    const life = t.lifecycle_score || 0;
 
                     row.innerHTML = `
                         <td>
@@ -686,12 +668,13 @@
                         <td><span class="badge ${phaseClass}">${formatPhase(t.phase)}</span></td>
                         <td>
                             <div style="display:flex; align-items:center; gap:0.5rem;">
-                                <span class="mono" style="color:${evColor}; font-weight:700;">${t.ev_score.toFixed(2)}</span>
-                                <div style="width:40px; height:4px; background:#334155; border-radius:2px;"><div style="width:${t.ev_score * 100}%; height:100%; background:${evColor}; border-radius:2px;"></div></div>
+                                <span class="mono" style="color:${evColor}; font-weight:700;">${t.ev_score.toFixed(1)}</span>
+                                <div style="width:40px; height:4px; background:#334155; border-radius:2px;"><div style="width:${t.ev_score}%; height:100%; background:${evColor}; border-radius:2px;"></div></div>
                             </div>
                         </td>
-                        <td style="font-size:0.8rem;">${growthState}</td>
-                        <td style="font-size:0.8rem; color:${exhaust === "High" ? "var(--red)" : "var(--text-dim)"};">${exhaust}</td>
+                        <td class="mono" style="font-size:0.8rem;">${struct.toFixed(1)}</td>
+                        <td class="mono" style="font-size:0.8rem;">${cap.toFixed(1)}</td>
+                        <td class="mono" style="font-size:0.8rem;">${life.toFixed(0)}</td>
                         <td><span class="decision-badge ${biasClass}">${bias}</span></td>
                     `;
                     tbody.appendChild(row);
@@ -704,10 +687,7 @@
         function selectToken(t) {
             selectedMint = t.mint;
             document.getElementById("selected-mint").value = t.mint;
-
-            // Highlight row
             document.querySelectorAll("#rankings-body tr").forEach(r => r.classList.remove("selected"));
-            // (Re-render handles highlighting, but we can do it manually if needed)
 
             // Header
             document.getElementById("detail-name").textContent = t.name || "Unknown";
@@ -720,7 +700,7 @@
             badge.textContent = formatPhase(t.phase);
 
             const evEl = document.getElementById("detail-ev");
-            evEl.textContent = t.ev_score.toFixed(2);
+            evEl.textContent = t.ev_score.toFixed(1);
             evEl.style.color = getEvColor(t.ev_score);
 
             const biasEl = document.getElementById("detail-bias");
@@ -728,61 +708,54 @@
             biasEl.className = `decision-badge decision-${t.decision || "WAIT"}`;
 
             const asymEl = document.getElementById("detail-asymmetry");
-            if (t.ev_score > 0.7) asymEl.textContent = "High Upside Potential";
-            else if (t.ev_score < 0.3) asymEl.textContent = "High Risk / Avoid";
-            else asymEl.textContent = "Neutral Structure";
+            if (t.ev_score >= 80) asymEl.textContent = "High Expected Value";
+            else if (t.ev_score >= 65) asymEl.textContent = "Strong Opportunity";
+            else if (t.ev_score >= 50) asymEl.textContent = "Moderate";
+            else if (t.ev_score >= 35) asymEl.textContent = "Weak Signal";
+            else asymEl.textContent = "Avoid";
             asymEl.style.color = getEvColor(t.ev_score);
 
-            // Signals
-            const sig = t.signals || {};
+            // EV Components
+            setVal("sig-structural", t.structural_score, 1);
+            setVal("sig-capital", t.capital_score, 1);
+            setVal("sig-lifecycle", t.lifecycle_score, 0);
 
             // Participation
-            setVal("sig-uniques", sig.unique_makers);
-            setVal("sig-ratio", sig.unique_to_swap_ratio, 2);
-            setVal("sig-vpu", sig.volume_per_unique, 0, "$");
+            setVal("sig-uniques", t.unique_makers);
+            setVal("sig-ratio", t.usr, 4);
+            setVal("sig-vpu", t.vpu, 2, "$");
+            setVal("sig-cv", t.vpu_cv, 4);
 
-            // Interpretations
-            const r = sig.unique_to_swap_ratio;
+            // USR interpretation
+            const r = t.usr;
             document.getElementById("int-ratio").textContent = (!r) ? "" : r > 0.4 ? "High churn" : r < 0.15 ? "Healthy holding" : "Normal";
 
-            // Momentum
-            setDelta("sig-ugr", sig.unique_growth_rate);
-            setDelta("sig-sa", sig.swap_acceleration);
-            document.getElementById("sig-state").textContent = sig.growth_state || "—";
+            // Growth & Risk
+            setDelta("sig-ugr", t.unique_growth);
+            setDelta("sig-vgr", t.volume_growth);
+            setVal("sig-decline", t.decline_from_peak, 2, "", "%");
+            setVal("sig-dsp", t.days_since_peak);
 
-            // Exhaustion
-            setVal("sig-decline", sig.decline_from_peak, 2, "", "%");
-            setVal("sig-dsp", sig.days_since_peak);
-            document.getElementById("sig-exhaust").textContent = sig.exhaustion || "—";
-            document.getElementById("sig-exhaust").style.color = sig.exhaustion === "High" ? "var(--red)" : "var(--green)";
-
-            // Prediction / Cohorts
-            document.getElementById("detail-time").textContent = `${t.time_in_phase || 0}d`;
-            setVal("sig-stick", sig.stickiness, 2, "", "%");
-            const stick = sig.stickiness;
-            document.getElementById("int-stick").textContent = !stick ? "" : stick > 0.4 ? "Sticky holders" : stick < 0.1 ? "Pure churn" : "Normal";
-
-            setVal("sig-buy", sig.buy_ratio, 2, "", "%");
-            const buy = sig.buy_ratio;
-            document.getElementById("int-buy").textContent = !buy ? "" : buy > 0.7 ? "Exhaustion?" : buy < 0.3 ? "Seller fatigue?" : "Balanced";
-
-            setVal("sig-liq", sig.liquidity_shift, 4);
-            const liq = sig.liquidity_shift;
-            document.getElementById("int-liq").textContent = !liq ? "" : liq > 0.1 ? "Volatile shifts" : "Stable";
+            // Time in phase
+            document.getElementById("detail-time").textContent = `${t.days_since_peak || 0}d`;
         }
 
         // Helpers
         function getPhaseClass(p) {
-            if (p === "EARLY_EXPANSION") return "bg-early";
-            if (p === "EXPANSION") return "bg-xp";
-            if (p === "LATE_HYPE") return "bg-hype";
-            if (p === "DESTRUCTIVE") return "bg-dest";
-            if (p === "POST_DESTRUCTIVE") return "bg-post";
-            if (p === "ACCUMULATING") return "bg-accum";
-            return "bg-unk";
+            const map = {
+                'INITIAL': 'bg-early',
+                'ACCELERATION': 'bg-xp',
+                'EXPANSION': 'bg-xp',
+                'MATURE': 'bg-accum',
+                'DISTRIBUTION': 'bg-hype',
+                'DESTRUCTIVE': 'bg-dest',
+                'POST_DESTRUCTIVE': 'bg-post',
+                'DORMANT': 'bg-unk',
+            };
+            return map[p] || 'bg-unk';
         }
-        function formatPhase(p) { return p ? p.replace('_', ' ') : "UNKNOWN"; }
-        function getEvColor(s) { return s > 0.7 ? "var(--green)" : s > 0.4 ? "var(--yellow)" : "var(--red)"; }
+        function formatPhase(p) { return p ? p.replaceAll('_', ' ') : "UNKNOWN"; }
+        function getEvColor(s) { return s >= 65 ? "var(--green)" : s >= 35 ? "var(--yellow)" : "var(--red)"; }
 
         function setVal(id, v, dec = 0, pre = "", suf = "") {
             const el = document.getElementById(id);
