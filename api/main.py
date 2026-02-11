@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from api import logger
 from api.db import init_db, close_db, get_db_connection
 from api.metrics import router as metrics_router
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 app = FastAPI(title="Solana Analytics", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/health")
 async def health():
