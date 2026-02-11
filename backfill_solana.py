@@ -121,6 +121,7 @@ async def backfill(limit_per_page=100, max_pages=50):
                                     continue
 
                                 block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                                found_token = False
                                 
                                 for leg in swap.get("tokenInputs", []):
                                     if leg.get("mint") == TOKEN_MINT:
