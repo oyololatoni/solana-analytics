@@ -170,6 +170,17 @@ def compute_signals(snapshots: List[Dict]) -> Dict:
         "buy_ratio": round(today["vol_buy"] / today["volume"], 4) if today["volume"] > 0 else 0.5,
     }
 
+    # New: Liquidity Shift (Volatility of buy/sell ratio over last 3 days)
+    if not signals.get("insufficient_data"):
+        recent_buys = [s.get("vol_buy", 0) / s.get("volume", 1) for s in snapshots[-3:]]
+        mean_buy = sum(recent_buys) / len(recent_buys)
+        variance = sum((x - mean_buy) ** 2 for x in recent_buys) / len(recent_buys)
+        signals["liquidity_shift"] = round(variance ** 0.5, 4)
+    else:
+        signals["liquidity_shift"] = 0
+
+    return signals
+
 
 # ---------------------------------------------------------------------------
 # 4. Phase Classification
