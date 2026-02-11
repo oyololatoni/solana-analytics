@@ -8,7 +8,6 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
-
 from api import logger
 from api.db import init_db, close_db, get_db_connection
 from config import TRACKED_TOKENS
@@ -143,7 +142,6 @@ async def process_batch():
             logger.info(f"Worker processing {len(jobs)} jobs...")
             
             # --- Chain Setup ---
-            # Assume 'solana' exists or seed it
             await cur.execute("SELECT id FROM chains WHERE name = 'solana'")
             chain_row = await cur.fetchone()
             if not chain_row:
@@ -169,107 +167,116 @@ async def process_batch():
                     ignored_exception = 0
                     
                     try:
+                        # CREATE SAVEPOINT FOR JOB
                         async with conn.transaction():
                             if isinstance(payload, list):
-                            events_received = len(payload)
-                            for raw_tx in payload:
-                                try:
-                                    # 1. Normalize via Adapter
-                                    canonical_events = adapter.normalize_tx(raw_tx)
-                                    
-                                    # 2. Process Canonical Events
-                                    found_tracked_token = False
-                                    
-                                    for event in canonical_events:
-                                        if event.token_address not in TRACKED_TOKENS:
-                                            continue
+                                events_received = len(payload)
+                                for raw_tx in payload:
+                                    try:
+                                        # 1. Normalize
+                                        canonical_events = adapter.normalize_tx(raw_tx)
                                         
-                                        found_tracked_token = True
+                                        # 2. Process
+                                        found_tracked_token = False
                                         
-                                        token_id = await ensure_token_id(
-                                            cur, chain_id, event.token_address, event.timestamp, batch_token_ids
-                                        )
-                                        if not token_id: continue
-
-                                        if isinstance(event, CanonicalWalletInteraction):
-                                            await upsert_wallet_interaction(cur, chain_id, token_id, event)
+                                        for event in canonical_events:
+                                            if event.token_address not in TRACKED_TOKENS:
+                                                continue
                                             
-                                        elif isinstance(event, CanonicalTrade):
-                                            inserted = await insert_trade(cur, chain_id, token_id, event)
-                                            if inserted:
-                                                swaps_inserted += 1
+                                            found_tracked_token = True
+                                            
+                                            token_id = await ensure_token_id(
+                                                cur, chain_id, event.token_address, event.timestamp, batch_token_ids
+                                            )
+                                            if not token_id: continue
 
-                                    if not found_tracked_token:
-                                        ignored_no_tracked_tokens += 1
-
-                                    # 3. Legacy Write (Raw JSON) - Optional/Safety
-                                    swap = raw_tx.get("events", {}).get("swap")
-                                    if swap:
-                                        signature = raw_tx.get("signature")
-                                        if signature:
-                                            try:
-                                                # Use block_time from tx if avail, else now
-                                                ts_raw = raw_tx.get("timestamp")
-                                                bt = datetime.fromtimestamp(ts_raw, tz=timezone.utc) if ts_raw else datetime.now(timezone.utc)
+                                            if isinstance(event, CanonicalWalletInteraction):
+                                                await upsert_wallet_interaction(cur, chain_id, token_id, event)
                                                 
-                                                await cur.execute(
-                                                    """
-                                                    INSERT INTO events (
-                                                        tx_signature, slot, event_type, wallet,
-                                                        token_mint, amount, block_time, program_id, metadata, direction
+                                            elif isinstance(event, CanonicalTrade):
+                                                inserted = await insert_trade(cur, chain_id, token_id, event)
+                                                if inserted:
+                                                    swaps_inserted += 1
+
+                                        if not found_tracked_token:
+                                            ignored_no_tracked_tokens += 1
+
+                                        # 3. Legacy Write
+                                        swap = raw_tx.get("events", {}).get("swap")
+                                        if swap:
+                                            signature = raw_tx.get("signature")
+                                            if signature:
+                                                try:
+                                                    ts_raw = raw_tx.get("timestamp")
+                                                    bt = datetime.fromtimestamp(ts_raw, tz=timezone.utc) if ts_raw else datetime.now(timezone.utc)
+                                                    
+                                                    await cur.execute(
+                                                        """
+                                                        INSERT INTO events (
+                                                            tx_signature, slot, event_type, wallet,
+                                                            token_mint, amount, block_time, program_id, metadata, direction
+                                                        )
+                                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                        ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
+                                                        """,
+                                                        (
+                                                            signature, raw_tx.get("slot"), "swap", 
+                                                            raw_tx.get("feePayer"), 
+                                                            "legacy", 0, 
+                                                            bt,
+                                                            swap.get("program", ""), 
+                                                            json.dumps(raw_tx), 
+                                                            "unknown"
+                                                        ),
                                                     )
-                                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                                    ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
-                                                    """,
-                                                    (
-                                                        signature, raw_tx.get("slot"), "swap", 
-                                                        raw_tx.get("feePayer"), 
-                                                        "legacy", 0, 
-                                                        bt,
-                                                        swap.get("program", ""), 
-                                                        json.dumps(raw_tx), 
-                                                        "unknown"
-                                                    ),
-                                                )
-                                            except:
-                                                pass 
+                                                except:
+                                                    pass 
 
-                                except Exception as e:
-                                    ignored_exception += 1
-                                    logger.error(f"Tx processing error: {e}")
+                                    except Exception as e:
+                                        ignored_exception += 1
+                                        logger.error(f"Tx processing error: {e}")
 
-                        # Insert Stats
-                        swaps_ignored = ignored_no_tracked_tokens + ignored_exception
-                        try:
-                            await cur.execute(
-                                """
-                                INSERT INTO ingestion_stats (
-                                    source, events_received, swaps_inserted, swaps_ignored,
-                                    ignored_missing_fields, ignored_no_swap_event, ignored_no_tracked_tokens,
-                                    ignored_constraint_violation, ignored_exception
+                            # Insert Stats (Inside Savepoint)
+                            swaps_ignored = ignored_no_tracked_tokens + ignored_exception
+                            try:
+                                await cur.execute(
+                                    """
+                                    INSERT INTO ingestion_stats (
+                                        source, events_received, swaps_inserted, swaps_ignored,
+                                        ignored_missing_fields, ignored_no_swap_event, ignored_no_tracked_tokens,
+                                        ignored_constraint_violation, ignored_exception
+                                    )
+                                    VALUES (%s, %s, %s, %s, 0, 0, %s, 0, %s)
+                                    """,
+                                    (
+                                        f"{source}-worker", events_received, swaps_inserted, swaps_ignored,
+                                        ignored_no_tracked_tokens, ignored_exception
+                                    ),
                                 )
-                                VALUES (%s, %s, %s, %s, 0, 0, %s, 0, %s)
-                                """,
-                                (
-                                    f"{source}-worker", events_received, swaps_inserted, swaps_ignored,
-                                    ignored_no_tracked_tokens, ignored_exception
-                                ),
-                            )
-                        except Exception:
-                            pass
+                            except Exception:
+                                pass
 
-                        # Mark Job Completed
-                        await cur.execute(
-                            "UPDATE raw_webhooks SET status = 'processed', processed_at = NOW() WHERE id = %s",
-                            (job_id,)
-                        )
+                            # Mark Job Completed (Inside Savepoint)
+                            await cur.execute(
+                                "UPDATE raw_webhooks SET status = 'processed', processed_at = NOW() WHERE id = %s",
+                                (job_id,)
+                            )
                 
                     except Exception as job_err:
                         logger.error(f"Job {job_id} failed: {job_err}")
-                        await cur.execute(
-                            "UPDATE raw_webhooks SET status = 'failed', error_message = %s, processed_at = NOW() WHERE id = %s",
-                            (str(job_err), job_id)
-                        )
+                        # Update status (Outside savepoint, inside transaction)
+                        # Ensure we don't break the outer loop transaction
+                        # But wait, we need to commit the failure status?
+                        # If we are in `except`, the savepoint rolled back.
+                        # We are back in the outer transaction state.
+                        # We can execute normal commands.
+                        try:
+                            await cur.execute(
+                                "UPDATE raw_webhooks SET status = 'failed', error_message = %s, processed_at = NOW() WHERE id = %s",
+                                (str(job_err), job_id)
+                            )
+                        except Exception as update_err:
+                            logger.error(f"Failed to update job {job_id} failure status: {update_err}")
 
             await conn.commit()
             return len(jobs)
@@ -281,7 +288,6 @@ async def run_worker():
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, handle_signal)
     
-    # Try SIGTERM, might fail on some OS/environments if not supported in loop
     try:
         loop.add_signal_handler(signal.SIGTERM, handle_signal)
     except NotImplementedError:
