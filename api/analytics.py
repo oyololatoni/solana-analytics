@@ -198,9 +198,7 @@ async def get_all_phases():
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
-            # Join token_state (legacy phase info) with latest feature_snapshot (V1 score)
-            # We use tokens table to bridge mint (token_state) -> id (feature_snapshots)
-            await cur.execute(\"""
+            await cur.execute("""
                 SELECT 
                     ts.mint, 
                     ts.phase, 
@@ -233,7 +231,7 @@ async def get_all_phases():
                     LIMIT 1
                 ) fs ON true
                 ORDER BY fs.score_total DESC NULLS LAST
-            \""")
+            """)
             
             rows = await cur.fetchall()
             results = []
