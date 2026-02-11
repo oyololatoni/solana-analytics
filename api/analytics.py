@@ -183,47 +183,64 @@ async def get_timeseries(mint: str = Query(..., description="Token mint"),
             }
 
 # ---------------------------------------------------------------------------
-# Phase Analysis Endpoints
+# Phase Analysis Endpoints (Snapshot Architecture)
 # ---------------------------------------------------------------------------
-from api.phase_engine import analyze_token, analyze_all_tokens
+from api.phase_engine import get_all_states, analyze_all_tokens, analyze_token
 
 @router.get("/phase/all")
-async def get_all_phases(days: int = 7):
+async def get_all_phases():
     """
-    Returns phase classification + EV score for ALL tokens active in DB,
-    sorted by EV score descending (best opportunities first).
+    Returns phase state for all tokens from the snapshot table.
+    Fast read — no computation. Call POST /analytics/refresh to update.
     """
     from config import get_token_name
     from api.helius import fetch_token_metadata
-    
-    # Analyze all active tokens from DB
-    results = await analyze_all_tokens(days=days)
-    
-    # Attach human-readable names (cached/memoized in a real app, here simple loop)
-    # We limit to top 50 to avoid hammering metadata API if list is huge
-    top_results = results[:50]
-    
-    for r in top_results:
-        mint = r["mint"]
+
+    states = await get_all_states()
+
+    # If snapshot table is empty, trigger a refresh
+    if not states:
+        results = await analyze_all_tokens(days=7)
+        for r in results:
+            mint = r["mint"]
+            name = get_token_name(mint)
+            if name == f"{mint[:4]}...{mint[-4:]}":
+                meta = fetch_token_metadata(mint)
+                if meta and meta.get("name"):
+                    name = meta["name"]
+            r["name"] = name
+        return results
+
+    # Attach names
+    for s in states:
+        mint = s["mint"]
         name = get_token_name(mint)
-        
-        # If name is just the truncated mint, try fetching real metadata
         if name == f"{mint[:4]}...{mint[-4:]}":
             meta = fetch_token_metadata(mint)
             if meta and meta.get("name"):
                 name = meta["name"]
-        
-        r["name"] = name
-    
-    return top_results
+        s["name"] = name
+
+    return states
 
 @router.get("/phase/{mint}")
-async def get_token_phase(mint: str, days: int = 7):
-    """
-    Returns full phase analysis for a single token:
-    phase, EV score, signals, and daily snapshots.
-    """
+async def get_token_phase(mint: str):
+    """Returns full phase analysis for a single token (live computation)."""
     from config import get_token_name
-    result = await analyze_token(mint, days)
+    result = await analyze_token(mint)
     result["name"] = get_token_name(mint)
     return result
+
+@router.post("/refresh")
+async def refresh_all_phases():
+    """
+    Triggers full re-analysis of all active tokens.
+    Updates token_state and token_scores_history tables.
+    """
+    results = await analyze_all_tokens(days=7)
+    return {
+        "status": "ok",
+        "tokens_analyzed": len(results),
+        "top_ev": results[0] if results else None,
+    }
+
