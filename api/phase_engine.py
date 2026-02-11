@@ -193,82 +193,91 @@ async def compute_peak_metrics(mint: str, days: int = 14) -> Dict:
 
 
 # ---------------------------------------------------------------------------
-# 4. Deterministic Phase Classification (7 phases, priority order)
+# Constants (Hard Thresholds)
+# ---------------------------------------------------------------------------
+U_MIN = 15
+V_MIN = 1000
+USR_HEALTHY_LOW = 0.20
+USR_HEALTHY_HIGH = 0.60
+VPU_STABILITY_THRESHOLD = 0.35
+
+# ---------------------------------------------------------------------------
+# 4. Deterministic Phase Classification (Final Logic)
 # ---------------------------------------------------------------------------
 
 def classify_phase(metrics: Dict) -> str:
     """
-    Deterministic phase classification.
-    Priority: Destructive > Distribution > Post-Destructive >
-              Acceleration > Expansion > Mature > Initial > Dormant
+    Strict priority order:
+    1. Post-Destructive Stabilization
+    2. Acceleration
+    3. Early Expansion
+    4. Distribution
+    5. Dormant (fallback)
     """
-    U = metrics.get("U", 0)
-    dU = metrics.get("dU", 0)
-    dV = metrics.get("dV", 0)
-    decline = metrics.get("decline_from_peak", 0)
-    days_since_peak = metrics.get("days_since_peak", 0)
-    vpu_cv = metrics.get("vpu_cv", 1.0)
-    median_vpu = metrics.get("median_vpu", 0)
-    VPU = metrics.get("VPU", 0)
-    usr_recovering = metrics.get("usr_recovering", False)
-    vpu_rising = metrics.get("vpu_rising", False)
-    usr_drop = metrics.get("usr_drop", 0)
+    # Unpack for clarity and match user spec
+    dU = metrics.get("dU_2d", 0)
+    dV = metrics.get("dV_2d", 0)
+    DeclineFromPeak = metrics.get("DeclineFromPeak", 0)
+    DaysSincePeak = metrics.get("DaysSincePeak", 0)
+    VPU = metrics.get("VPU_t", 0)
+    median_VPU = metrics.get("median_VPU", 0)
+    VPU_CV = metrics.get("VPU_CV", 0)
+    USR = metrics.get("USR_t", 0)
+    prev_USR = metrics.get("previous_USR", 0)
+    
+    # 0. Low Activity Gate (Dormant)
+    if metrics.get("U_t", 0) < U_MIN or metrics.get("V_t", 0) < V_MIN:
+        return "DORMANT"
 
-    # 1. DESTRUCTIVE — sharp collapse
-    if dU < -0.40 and decline <= -0.50 and days_since_peak > 3:
-        return "DESTRUCTIVE"
-
-    # 2. DISTRIBUTION — smart money exiting
+    # --- 1. POST-DESTRUCTIVE STABILIZATION ---
+    # Interpretation: Full collapse happened. Now stabilization + participation returning.
+    # Note: USR increasing check (USR >= prev_USR)
     if (
-        dU < 0.2
-        and dV >= 0
-        and VPU >= 1.5 * median_vpu if median_vpu > 0 else False
-        and usr_drop > 0.3
-        and days_since_peak <= 3
-    ):
-        return "DISTRIBUTION"
-
-    # 3. POST_DESTRUCTIVE — base forming (highest EV)
-    if (
-        decline <= -0.6
-        and days_since_peak >= 3
+        DeclineFromPeak <= -0.60
+        and DaysSincePeak >= 3
         and dU >= 0
-        and -0.2 <= dV <= 0.2
-        and vpu_cv < 0.25
-        and usr_recovering
+        and -0.20 <= dV <= 0.20
+        and VPU_CV <= VPU_STABILITY_THRESHOLD
+        and USR >= prev_USR
     ):
         return "POST_DESTRUCTIVE"
 
-    # 4. ACCELERATION — strong momentum
+    # --- 2. ACCELERATION ---
+    # Interpretation: Momentum explosion. Volume outrunning participation.
     if (
         dU >= 1.0
         and dV >= 1.0
         and dV >= dU
-        and vpu_rising
-        and usr_drop < 0.25
-        and abs(decline) < 0.1
+        and VPU > median_VPU
+        and USR >= USR_HEALTHY_LOW
+        and USR >= (prev_USR * 0.75)
+        and DeclineFromPeak >= -0.10
     ):
         return "ACCELERATION"
 
-    # 5. EXPANSION — healthy growth
+    # --- 3. EARLY EXPANSION ---
+    # Interpretation: Broad new participant growth.
     if (
-        dU >= 0.5
-        and dV >= 0.5
-        and abs(dU - dV) <= 0.2
-        and usr_drop < 0.2
-        and decline >= -0.3
+        dU >= 0.50
+        and dV >= 0.50
+        and abs(dU - dV) <= 0.20
+        and USR_HEALTHY_LOW <= USR <= USR_HEALTHY_HIGH
+        and DeclineFromPeak >= -0.30
     ):
-        return "EXPANSION"
+        return "EARLY_EXPANSION"
 
-    # 6. MATURE — plateau
-    if -0.1 <= dU <= 0.1 and decline >= -0.4:
-        return "MATURE"
+    # --- 4. DISTRIBUTION ---
+    # Interpretation: Capital recycling among fewer wallets.
+    if (
+        dU < 0.20
+        and dV >= 0
+        and VPU >= 1.5 * median_VPU
+        and USR <= (prev_USR * 0.70)
+        and DaysSincePeak <= 3
+    ):
+        return "DISTRIBUTION"
 
-    # 7. INITIAL — early traction
-    if dU > 1.0 and U < 500:
-        return "INITIAL"
-
-    # Default
+    # --- 5. DORMANT (Default) ---
     return "DORMANT"
 
 
@@ -291,21 +300,28 @@ def capital_quality_score(vpu_stable: bool, usr_healthy: bool, cv: float) -> flo
         score += 10
     if usr_healthy:
         score += 10
-    score += max(0, 10 - (cv * 20))
+    
+    # CV score: Lower is better. 0.0 -> 10 pts, 0.5 -> 0 pts
+    cv_score = max(0, 10 - (cv * 20))
+    score += cv_score
     return round(min(score, 30), 2)
 
 
 def lifecycle_score(phase: str) -> float:
     """Layer 3 — Phase lifecycle bias (0-30)."""
+    # Strict map based on user intent
     weights = {
-        "DORMANT": 5,
+        "POST_DESTRUCTIVE": 30,  # Highest EV
+        "ACCELERATION": 25,
+        "EARLY_EXPANSION": 20,
+        "EXPANSION": 15,          # Using Expansion separate? Logic above uses EARLY_EXPANSION. 
+                                  # Logic in classify_phase only returns EARLY_EXPANSION.
+                                  # But let's keep robust map.
+        "MATURE": 10,
         "INITIAL": 10,
-        "MATURE": 8,
-        "EXPANSION": 20,
-        "ACCELERATION": 15,
         "DISTRIBUTION": 5,
         "DESTRUCTIVE": 0,
-        "POST_DESTRUCTIVE": 30,
+        "DORMANT": 0
     }
     return float(weights.get(phase, 0))
 
@@ -317,10 +333,14 @@ def compute_ev_score(struct: float, capital: float, lifecycle: float) -> float:
 
 def get_decision_bias(ev_score: float, phase: str) -> str:
     """Interpret EV score into actionable bias."""
-    if phase == "DESTRUCTIVE":
-        return "AVOID"
+    if phase == "DORMANT":
+        return "IGNORE"
     if phase == "DISTRIBUTION":
         return "CAUTION"
+    # Post-destructive is specific high-value setup
+    if phase == "POST_DESTRUCTIVE":
+        return "BUY"
+        
     if ev_score >= 80:
         return "BUY"
     if ev_score >= 65:
@@ -351,8 +371,26 @@ async def analyze_token(mint: str) -> Dict:
     # 3. Peak metrics
     peaks = await compute_peak_metrics(mint, days=14)
 
-    # 4. Merge all metrics
+    # 4. Merge all metrics with USER SPEC keys
     metrics = {
+        # Raw for logic
+        "U_t": current["U"],
+        "S_t": current["S"],
+        "V_t": current["V"],
+        "VPU_t": current["VPU"],
+        "USR_t": current["USR"],
+        "previous_USR": previous["USR"],
+        
+        "dU_2d": deltas["dU"],
+        "dS_2d": deltas["dS"],
+        "dV_2d": deltas["dV"],
+        
+        "DeclineFromPeak": peaks["decline_from_peak"],
+        "DaysSincePeak": peaks["days_since_peak"],
+        "median_VPU": peaks["median_vpu"],
+        "VPU_CV": peaks["vpu_cv"],
+        
+        # Keep original keys for display/downstream compatibility if needed
         **current,
         **deltas,
         **peaks,
