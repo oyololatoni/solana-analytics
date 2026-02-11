@@ -449,6 +449,10 @@
                             <span id="detail-ev" class="ev-large" style="color: var(--text-dim);">0.00</span>
                         </div>
                         <div class="confidence-row" style="margin-top: 0.2rem;">
+                            <span>Time in Phase</span>
+                            <span id="detail-time" class="mono" style="color: var(--text-dim);">0d</span>
+                        </div>
+                        <div class="confidence-row" style="margin-top: 0.2rem;">
                             <span>Decision Bias</span>
                             <span id="detail-bias" class="decision-badge decision-WAIT">WAIT</span>
                         </div>
@@ -476,6 +480,20 @@
                         <div style="text-align: right;">
                             <span id="sig-vpu" class="signal-val">—</span>
                             <span id="int-vpu" class="signal-interpretation"></span>
+                        </div>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Stickiness</span>
+                        <div style="text-align: right;">
+                            <span id="sig-stick" class="signal-val">—</span>
+                            <span id="int-stick" class="signal-interpretation"></span>
+                        </div>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Buy Pressure</span>
+                        <div style="text-align: right;">
+                            <span id="sig-buy" class="signal-val">—</span>
+                            <span id="int-buy" class="signal-interpretation"></span>
                         </div>
                     </div>
                 </div>
@@ -719,6 +737,16 @@
             setVal("sig-dsp", sig.days_since_peak);
             document.getElementById("sig-exhaust").textContent = sig.exhaustion || "—";
             document.getElementById("sig-exhaust").style.color = sig.exhaustion === "High" ? "var(--red)" : "var(--green)";
+
+            // Prediction / Cohorts
+            document.getElementById("detail-time").textContent = `${t.time_in_phase || 0}d`;
+            setVal("sig-stick", sig.stickiness, 2, "", "%");
+            const stick = sig.stickiness;
+            document.getElementById("int-stick").textContent = !stick ? "" : stick > 0.4 ? "Sticky holders" : stick < 0.1 ? "Pure churn" : "Normal";
+
+            setVal("sig-buy", sig.buy_ratio, 2, "", "%");
+            const buy = sig.buy_ratio;
+            document.getElementById("int-buy").textContent = !buy ? "" : buy > 0.7 ? "Exhaustion?" : buy < 0.3 ? "Seller fatigue?" : "Balanced";
         }
 
         // Helpers
