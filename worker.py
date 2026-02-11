@@ -4,8 +4,10 @@ import json
 import os
 import signal
 import psycopg
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
+
 
 from api import logger
 from api.db import init_db, close_db, get_db_connection
