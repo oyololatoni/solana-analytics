@@ -722,7 +722,8 @@
             // EV Components
             setVal("sig-structural", t.structural_score, 1);
             setVal("sig-capital", t.capital_score, 1);
-            setVal("sig-lifecycle", t.lifecycle_score, 0);
+            setVal("sig-lifecycle", t.lifecycle_score, 1); // Changed to 1 decimal for consistency
+            setVal("sig-wallet", t.wallet_score, 1);
 
             // Participation
             setVal("sig-uniques", t.unique_makers);
