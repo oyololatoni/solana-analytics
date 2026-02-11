@@ -315,6 +315,8 @@ def main():
     print(f"  DB:   {'skip' if skip_db else 'deploy'}")
     print(f"  Code: {'skip' if db_only else 'deploy'}")
 
+    success = True
+
     # Step 1: Database
     if not skip_db:
         if not deploy_database(dry_run):
