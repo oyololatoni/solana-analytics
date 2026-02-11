@@ -181,16 +181,13 @@ async def process_batch():
                                 events_received = len(payload)
                                 for raw_tx in payload:
                                     try:
-                                        print(f"DEBUG: Processing TX {raw_tx.get('signature')}", flush=True)
                                         # 1. Normalize
                                         canonical_events = adapter.normalize_tx(raw_tx)
-                                        print(f"DEBUG: Normalized {len(canonical_events)} events", flush=True)
                                         
                                         # 2. Process
                                         found_tracked_token = False
                                         
                                         for event in canonical_events:
-                                            print(f"DEBUG: Event {event}", flush=True)
                                             if event.token_address not in TRACKED_TOKENS:
                                                 continue
                                             
@@ -199,16 +196,13 @@ async def process_batch():
                                             token_id = await ensure_token_id(
                                                 cur, chain_id, event.token_address, event.timestamp, batch_token_ids
                                             )
-                                            print(f"DEBUG: Token ID {token_id}", flush=True)
                                             if not token_id: continue
 
                                             if isinstance(event, CanonicalWalletInteraction):
                                                 await upsert_wallet_interaction(cur, chain_id, token_id, event)
-                                                print("DEBUG: Interaction Upserted", flush=True)
                                                 
                                             elif isinstance(event, CanonicalTrade):
                                                 inserted = await insert_trade(cur, chain_id, token_id, event)
-                                                print(f"DEBUG: Trade Inserted: {inserted}", flush=True)
                                                 if inserted:
                                                     swaps_inserted += 1
 
@@ -242,24 +236,16 @@ async def process_batch():
                                                                 bt,
                                                                 swap.get("program", ""), 
                                                                 json.dumps(raw_tx), 
-                                                                None # Fixed: "unknown" -> None
+                                                                None
                                                             ),
                                                         )
                                                 except Exception as legacy_err:
                                                     logger.error(f"Legacy Write FAILED for {signature}: {legacy_err}")
-                                                    # Savepoint handles rollback, so we can continue. 
+                                                    # Savepoint handles rollback, so we can continue.
 
                                     except Exception as e:
                                         ignored_exception += 1
                                         logger.error(f"Tx processing error (Tx Sig: {raw_tx.get('signature')}): {e}")
-                                        # Important: If this exception was raised by a DB helper, it might have aborted the savepoint?
-                                        # But wait, helper does try-except? No, helper raises `e`.
-                                        # So if helper raises, it means DB command failed.
-                                        # If DB command failed, savepoint IS aborted.
-                                        # So we CANNOT continue processing other TXs in this job savepoint?
-                                        # NO. If `async with conn.transaction():` is Per-JOB, one failure aborts the whole job.
-                                        # If we want to skip bad TXs but process good ones, we need Per-TX savepoint.
-                                        # I'll rely on Per-JOB savepoint for now. One bad apple spoils the bunch, but logs tell us which one.
                                         raise e 
 
                             # Insert Stats
