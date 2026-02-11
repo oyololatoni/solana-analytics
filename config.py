@@ -4,7 +4,9 @@ import os
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Webhook auth
+# Webhook auth & RPC
 HELIUS_WEBHOOK_SECRET = os.environ.get("HELIUS_WEBHOOK_SECRET", "")
+HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", HELIUS_WEBHOOK_SECRET)
 
 # Tokens we care about (comma-separated env var)
 # Tokens we care about (comma-separated env var)
