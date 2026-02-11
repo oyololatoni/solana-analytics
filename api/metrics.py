@@ -126,6 +126,8 @@ async def ingestion_stats():
                   ignored_no_tracked_tokens,
                   ignored_constraint_violation,
                   ignored_exception,
+                  ignored_replay,
+                  ignored_ingestion_disabled,
                   created_at
                 FROM ingestion_stats
                 ORDER BY created_at DESC
@@ -146,8 +148,10 @@ async def ingestion_stats():
                 "no_tracked_tokens": r[6],
                 "constraint_violations": r[7],
                 "exceptions": r[8],
+                "replays": r[9],
+                "ingestion_disabled": r[10],
             },
-            "timestamp": str(r[9])
+            "timestamp": str(r[11])
         }
         for r in rows
     ]
