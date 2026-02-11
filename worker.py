@@ -169,7 +169,8 @@ async def process_batch():
                     ignored_exception = 0
                     
                     try:
-                        if isinstance(payload, list):
+                        async with conn.transaction():
+                            if isinstance(payload, list):
                             events_received = len(payload)
                             for raw_tx in payload:
                                 try:
