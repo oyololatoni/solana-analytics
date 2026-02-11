@@ -7,6 +7,7 @@ from api.db import init_db, close_db, get_db_connection
 from api.metrics import router as metrics_router
 from api.webhooks import router as webhooks_router
 from api.analytics import router as analytics_router
+from api.alerts import router as alerts_router
 from config import TRACKED_TOKENS, INGESTION_ENABLED
 
 if not TRACKED_TOKENS:
@@ -45,3 +46,4 @@ async def index():
 app.include_router(metrics_router)
 app.include_router(webhooks_router)
 app.include_router(analytics_router)
+app.include_router(alerts_router)
