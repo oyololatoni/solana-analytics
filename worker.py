@@ -35,71 +35,79 @@ async def ensure_token_id(cur, chain_id, address, timestamp, cache):
     if address in cache:
         return cache[address]
     
-    await cur.execute(
-        """
-        INSERT INTO tokens (chain_id, address, created_at_chain)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (chain_id, address) DO UPDATE 
-        SET address = EXCLUDED.address
-        RETURNING id
-        """,
-        (chain_id, address, timestamp)
-    )
-    row = await cur.fetchone()
-    if row:
-        token_id = row[0]
-        cache[address] = token_id
-        return token_id
+    try:
+        await cur.execute(
+            """
+            INSERT INTO tokens (chain_id, address, created_at_chain)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (chain_id, address) DO UPDATE 
+            SET address = EXCLUDED.address
+            RETURNING id
+            """,
+            (chain_id, address, timestamp)
+        )
+        row = await cur.fetchone()
+        if row:
+            token_id = row[0]
+            cache[address] = token_id
+            return token_id
+    except Exception as e:
+        logger.error(f"ensure_token_id FAILED for {address}: {e}")
+        raise e
     return None
 
 async def upsert_wallet_interaction(cur, chain_id, token_id, event):
-    # Upsert Profile
-    await cur.execute(
-        """
-        INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (chain_id, address) DO UPDATE
-        SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
-        RETURNING id
-        """,
-        (chain_id, event.wallet_address, event.timestamp, event.timestamp)
-    )
-    wallet_row = await cur.fetchone()
-    if not wallet_row: return
-    
-    wallet_id = wallet_row[0]
-    
-    # Upsert Interaction
-    await cur.execute(
-        """
-        INSERT INTO wallet_token_interactions (
-            chain_id, token_id, wallet_id, first_interaction, last_interaction,
-            last_balance_token
+    try:
+        # Upsert Profile
+        await cur.execute(
+            """
+            INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (chain_id, address) DO UPDATE
+            SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
+            RETURNING id
+            """,
+            (chain_id, event.wallet_address, event.timestamp, event.timestamp)
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (token_id, wallet_id) DO UPDATE
-        SET 
-            last_interaction = EXCLUDED.last_interaction,
-            last_balance_token = EXCLUDED.last_balance_token,
-            interaction_count = wallet_token_interactions.interaction_count + 1
-        """,
-        (chain_id, token_id, wallet_id, event.timestamp, event.timestamp, event.last_balance_token)
-    )
+        wallet_row = await cur.fetchone()
+        if not wallet_row: return
+        
+        wallet_id = wallet_row[0]
+        
+        # Upsert Interaction
+        await cur.execute(
+            """
+            INSERT INTO wallet_token_interactions (
+                chain_id, token_id, wallet_id, first_interaction, last_interaction,
+                last_balance_token
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (token_id, wallet_id) DO UPDATE
+            SET 
+                last_interaction = EXCLUDED.last_interaction,
+                last_balance_token = EXCLUDED.last_balance_token,
+                interaction_count = wallet_token_interactions.interaction_count + 1
+            """,
+            (chain_id, token_id, wallet_id, event.timestamp, event.timestamp, event.last_balance_token)
+        )
+    except Exception as e:
+        logger.error(f"upsert_wallet_interaction FAILED for {event.wallet_address} Token {token_id}: {e}")
+        raise e
 
 async def insert_trade(cur, chain_id, token_id, event):
-    # Upsert Profile
-    await cur.execute(
-        """
-        INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (chain_id, address) DO UPDATE
-        SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
-        """,
-        (chain_id, event.wallet_address, event.timestamp, event.timestamp)
-    )
-    
-    # Insert Trade
     try:
+        # Upsert Profile
+        await cur.execute(
+            """
+            INSERT INTO wallet_profiles (chain_id, address, first_seen, last_seen)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (chain_id, address) DO UPDATE
+            SET last_seen = GREATEST(wallet_profiles.last_seen, EXCLUDED.last_seen)
+            """,
+            (chain_id, event.wallet_address, event.timestamp, event.timestamp)
+        )
+        
+        # Insert Trade
         await cur.execute(
             """
             INSERT INTO trades (
@@ -117,7 +125,7 @@ async def insert_trade(cur, chain_id, token_id, event):
         return cur.rowcount > 0
     except psycopg.Error as e:
         logger.error(f"Failed to insert trade {event.tx_signature}: {e}")
-        return False
+        raise e
 
 async def process_batch():
     async with get_db_connection() as conn:
@@ -160,14 +168,14 @@ async def process_batch():
                     payload = job[1]
                     source = job[3]
                     
-                    # Stats tracking
+                    # Stats
                     events_received = 0
                     swaps_inserted = 0
                     ignored_no_tracked_tokens = 0
                     ignored_exception = 0
                     
                     try:
-                        # CREATE SAVEPOINT FOR JOB
+                        # Job Savepoint
                         async with conn.transaction():
                             if isinstance(payload, list):
                                 events_received = len(payload)
@@ -185,6 +193,9 @@ async def process_batch():
                                             
                                             found_tracked_token = True
                                             
+                                            # DEBUG LOG
+                                            # logger.info(f"Processing Event: {event}")
+
                                             token_id = await ensure_token_id(
                                                 cur, chain_id, event.token_address, event.timestamp, batch_token_ids
                                             )
@@ -234,10 +245,18 @@ async def process_batch():
 
                                     except Exception as e:
                                         ignored_exception += 1
-                                        logger.error(f"Tx processing error: {e}")
+                                        logger.error(f"Tx processing error (Tx Sig: {raw_tx.get('signature')}): {e}")
+                                        # Important: If this exception was raised by a DB helper, it might have aborted the savepoint?
+                                        # But wait, helper does try-except? No, helper raises `e`.
+                                        # So if helper raises, it means DB command failed.
+                                        # If DB command failed, savepoint IS aborted.
+                                        # So we CANNOT continue processing other TXs in this job savepoint?
+                                        # NO. If `async with conn.transaction():` is Per-JOB, one failure aborts the whole job.
+                                        # If we want to skip bad TXs but process good ones, we need Per-TX savepoint.
+                                        # I'll rely on Per-JOB savepoint for now. One bad apple spoils the bunch, but logs tell us which one.
+                                        raise e 
 
-                            # Insert Stats (Inside Savepoint)
-                            swaps_ignored = ignored_no_tracked_tokens + ignored_exception
+                            # Insert Stats
                             try:
                                 await cur.execute(
                                     """
@@ -249,27 +268,22 @@ async def process_batch():
                                     VALUES (%s, %s, %s, %s, 0, 0, %s, 0, %s)
                                     """,
                                     (
-                                        f"{source}-worker", events_received, swaps_inserted, swaps_ignored,
+                                        f"{source}-worker", events_received, swaps_inserted, 
+                                        ignored_no_tracked_tokens + ignored_exception,
                                         ignored_no_tracked_tokens, ignored_exception
                                     ),
                                 )
                             except Exception:
                                 pass
 
-                            # Mark Job Completed (Inside Savepoint)
+                            # Mark Success
                             await cur.execute(
                                 "UPDATE raw_webhooks SET status = 'processed', processed_at = NOW() WHERE id = %s",
                                 (job_id,)
                             )
                 
                     except Exception as job_err:
-                        logger.error(f"Job {job_id} failed: {job_err}")
-                        # Update status (Outside savepoint, inside transaction)
-                        # Ensure we don't break the outer loop transaction
-                        # But wait, we need to commit the failure status?
-                        # If we are in `except`, the savepoint rolled back.
-                        # We are back in the outer transaction state.
-                        # We can execute normal commands.
+                        logger.error(f"Job {job_id} failed completely: {job_err}")
                         try:
                             await cur.execute(
                                 "UPDATE raw_webhooks SET status = 'failed', error_message = %s, processed_at = NOW() WHERE id = %s",
