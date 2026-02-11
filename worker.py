@@ -196,6 +196,22 @@ async def process_batch():
                                     if amount <= 0:
                                         continue
 
+                                    # Infer SOL amount (Naively for now)
+                                    amount_sol = 0.0
+                                    try:
+                                        if direction == 'in':
+                                            # Buy: Spent SOL (nativeInput)
+                                            native = swap.get("nativeInput")
+                                            if native and native.get("amount"):
+                                                amount_sol = float(native.get("amount")) / 1e9
+                                        else:
+                                            # Sell: Gained SOL (nativeOutput)
+                                            native = swap.get("nativeOutput")
+                                            if native and native.get("amount"):
+                                                amount_sol = float(native.get("amount")) / 1e9
+                                    except:
+                                        amount_sol = 0.0
+
                                     # --- 4. PRODUCTION SCHEMA WRITE (trades, tokens, wallet_profiles) ---
                                     
                                     # A. Resolve Token ID
@@ -244,14 +260,14 @@ async def process_batch():
                                             """
                                             INSERT INTO trades (
                                                 chain_id, token_id, tx_signature, wallet_address,
-                                                side, amount_token, slot, timestamp
+                                                side, amount_token, amount_sol, slot, timestamp
                                             )
-                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                             ON CONFLICT (chain_id, tx_signature) DO NOTHING
                                             """,
                                             (
                                                 chain_id, token_id, signature, wallet,
-                                                side, amount, slot, block_time
+                                                side, amount, amount_sol, slot, block_time
                                             )
                                         )
                                     except psycopg.Error as e:
