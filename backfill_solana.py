@@ -98,46 +98,33 @@ async def backfill(limit_per_page=100, max_pages=50):
 
                                 block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
                                 
-                                # Broad Swap Detection (Inputs + Outputs)
-                                all_legs = swap.get("tokenInputs", []) + swap.get("tokenOutputs", [])
-                                found_token = False
-                                wallet = None
-                                amount = None
-
-                                for leg in all_legs:
+                                for leg in swap.get("tokenInputs", []):
                                     if leg.get("mint") == TOKEN_MINT:
                                         found_token = True
                                         wallet = leg.get("userAccount")
                                         amt_obj = leg.get("rawTokenAmount", {})
                                         amount = amt_obj.get("tokenAmount")
+                                        raw_amount = amt_obj.get("amount")
+                                        decimals = amt_obj.get("decimals")
+                                        direction = "out" # Wallet sent token out = Sell
                                         
-                                        if not amount:
-                                            continue
+                                        if amount:
+                                            await insert_event(cur, signature, slot, wallet, amount, raw_amount, decimals, direction, block_time, swap, tx)
+                                            swaps_inserted += 1
 
-                                        # Insert Logic
-                                        try:
-                                            await cur.execute(
-                                                """
-                                                INSERT INTO events (
-                                                    tx_signature, slot, event_type, wallet,
-                                                    token_mint, amount, block_time, program_id, metadata
-                                                )
-                                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                                ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
-                                                """,
-                                                (
-                                                    signature, slot, "swap", wallet, TOKEN_MINT, amount,
-                                                    block_time, swap.get("program", ""), json.dumps(tx),
-                                                ),
-                                            )
-                                            if cur.rowcount == 1:
-                                                swaps_inserted += 1
-                                            else:
-                                                ignored_constraint_violation += 1
-                                                
-                                        except psycopg.IntegrityError:
-                                            ignored_constraint_violation += 1
-                                            pass
+                                for leg in swap.get("tokenOutputs", []):
+                                    if leg.get("mint") == TOKEN_MINT:
+                                        found_token = True
+                                        wallet = leg.get("userAccount")
+                                        amt_obj = leg.get("rawTokenAmount", {})
+                                        amount = amt_obj.get("tokenAmount")
+                                        raw_amount = amt_obj.get("amount")
+                                        decimals = amt_obj.get("decimals")
+                                        direction = "in" # Wallet received token in = Buy
+                                        
+                                        if amount:
+                                            await insert_event(cur, signature, slot, wallet, amount, raw_amount, decimals, direction, block_time, swap, tx)
+                                            swaps_inserted += 1
                                 
                                 if not found_token:
                                     ignored_no_tracked_tokens += 1
