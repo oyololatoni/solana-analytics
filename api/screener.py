@@ -8,7 +8,7 @@ from config import HELIUS_API_KEY
 router = APIRouter(prefix="/screener", tags=["screener"])
 
 class FilterCriteria(BaseModel):
-    metric: Literal['volume_24h', 'swap_count_24h', 'unique_makers_24h', 'price_change_24h']
+    metric: Literal['volume_24h', 'swap_count_24h', 'unique_makers_24h', 'price_change_24h', 'unique_growth', 'ratio', 'decline']
     condition: Literal['gt', 'lt']
     value: float
 
@@ -31,15 +31,62 @@ class TokenResult(BaseModel):
 @router.post("/filter")
 async def filter_tokens(req: ScreenerRequest):
     """
-    Filters tracked tokens based on aggregated metrics over the last 24 hours.
-    currently supports AND logic (must meet all criteria).
+    Filters tokens based on aggregated metrics.
+    If source is local, it supports both database-level filters (volume/swaps)
+    and phase-engine level filters (growth, ratio, decline).
     """
-    # if not req.filters:
-    #     raise HTTPException(status_code=400, detail="No filters provided")
-
     if req.source == 'external':
         return await fetch_external_tokens(req)
 
+    # Check if we have structural filters that require the phase engine
+    structural_metrics = {'unique_growth', 'ratio', 'decline'}
+    has_structural = any(f.metric in structural_metrics for f in req.filters)
+
+    if has_structural:
+        from api.phase_engine import analyze_all_tokens
+        # Analyze all active tokens in DB
+        tokens = await analyze_all_tokens(days=7)
+        
+        filtered = []
+        for t in tokens:
+            sig = t.get("signals", {})
+            if not sig or sig.get("insufficient_data"):
+                continue
+                
+            include = True
+            for f in req.filters:
+                val = None
+                if f.metric == 'unique_growth': val = sig.get("unique_growth_rate")
+                elif f.metric == 'ratio': val = sig.get("unique_to_swap_ratio")
+                elif f.metric == 'decline': val = sig.get("decline_from_peak")
+                elif f.metric == 'volume_24h': val = t.get("signals", {}).get("volume") # use engine's latest day vol
+                elif f.metric == 'swap_count_24h': val = t.get("signals", {}).get("swap_count")
+                
+                if val is None:
+                    continue # or skip?
+                
+                if f.condition == 'gt' and not (val > f.value): include = False
+                elif f.condition == 'lt' and not (val < f.value): include = False
+            
+            if include:
+                # Map to TokenResult format
+                from config import get_token_name
+                filtered.append({
+                    "mint": t["mint"],
+                    "name": t.get("name") or get_token_name(t["mint"]),
+                    "volume_24h": sig.get("volume", 0),
+                    "swap_count_24h": sig.get("swap_count", 0),
+                    "unique_makers_24h": sig.get("unique_makers", 0),
+                    "price_change_24h": sig.get("unique_growth_rate", 0) * 100, # use growth as a proxy for change
+                    "metric_value": sig.get("unique_growth_rate", 0) # primary sort key if requested
+                })
+        
+        # Sort
+        reverse = (req.sort_direction == 'desc')
+        filtered.sort(key=lambda x: x.get(req.sort_by, 0), reverse=reverse)
+        return filtered[:50]
+
+    # Fallback to direct DB query for non-structural filters (more efficient)
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             # We will build a query that aggregates 24h stats for ALL tracked tokens
