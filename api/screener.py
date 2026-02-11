@@ -83,7 +83,14 @@ async def filter_tokens(req: ScreenerRequest):
         
         # Sort
         reverse = (req.sort_direction == 'desc')
-        filtered.sort(key=lambda x: x.get(req.sort_by, 0), reverse=reverse)
+        # Map sort_by to signal keys if necessary
+        sort_key_map = {
+            "volume_24h": "volume_24h",
+            "swap_count_24h": "swap_count_24h",
+            "price_change_24h": "price_change_24h"
+        }
+        sort_attr = sort_key_map.get(req.sort_by, req.sort_by)
+        filtered.sort(key=lambda x: x.get(sort_attr, 0), reverse=reverse)
         return filtered[:50]
 
     # Fallback to direct DB query for non-structural filters (more efficient)
@@ -265,7 +272,7 @@ async def fetch_external_tokens(req: ScreenerRequest):
         # Sort
         reverse = (req.sort_direction == 'desc')
         results.sort(key=lambda x: x.get(req.sort_by, 0), reverse=reverse)
-        # Deduplicate by mint (pairs might return multiple pools for same token)
+        # Deduplicate by mint
         seen = set()
         deduped = []
         for r in results:
@@ -278,3 +285,44 @@ async def fetch_external_tokens(req: ScreenerRequest):
     except Exception as e:
         print(f"External Fetch Error: {e}")
         return []
+
+class TrackRequest(BaseModel):
+    mint: str
+    name: Optional[str] = None
+
+@router.post("/track")
+async def track_token(req: TrackRequest):
+    """
+    Adds a token to the database tracking list.
+    """
+    from api.db import get_db_connection
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # We don't have a 'tracked_tokens' table specifically in this architecture,
+            # we just ensure it exists in metadata or the first event triggers it.
+            # But the requirement is to 'add to phase ranking'. 
+            # Phase ranking is dynamic based on events.
+            # So we insert a dummy/init event if none exists to make it show up in get_active_mints.
+            await cur.execute(
+                "SELECT 1 FROM events WHERE token_mint = %s LIMIT 1",
+                (req.mint,)
+            )
+            exists = await cur.fetchone()
+            if not exists:
+                import json
+                from datetime import datetime, timezone
+                await cur.execute(
+                    """
+                    INSERT INTO events (tx_signature, slot, event_type, wallet, token_mint, amount, block_time, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"INIT_{req.mint[:8]}_{datetime.now().timestamp()}", 
+                        0, "init", "SYSTEM", req.mint, 0, 
+                        datetime.now(timezone.utc), 
+                        json.dumps({"name": req.name, "note": "Manually tracked"})
+                    )
+                )
+                await conn.commit()
+    
+    return {"status": "success", "mint": req.mint}
