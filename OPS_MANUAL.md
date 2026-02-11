@@ -7,13 +7,13 @@ This document outlines the core operational principles for maintaining the Solan
 **Rule:** Nothing deploys without passing `preflight.py` first.
 
 We have enforced this in `tools/deploy.py`. The script will now **abort immediately** if:
-*   Required environment variables are missing.
-*   Database connection fails.
-*   Critical imports (`api.main`) crash.
+*   Required environment variables (`DATABASE_URL`, `SECRET`, `TOKENS`) are missing.
+*   Database connection fails OR required tables (`events`, `raw_webhooks`) are missing.
+*   Critical code modules fail to import (Syntax errors, missing dependencies).
 
 **Your Workflow:**
-1.  Run `python preflight.py` locally before committing complex changes.
-2.  Trust the CI/CD pipeline which runs this automatically.
+1.  Run `python preflight.py` (or `tools/deploy.py --dry-run`) locally.
+2.  Trust the CI/CD pipeline which runs the **exact same gate** via `tools/deploy.py --db-only`.
 
 ## 2. Ingestion Control Plane
 
