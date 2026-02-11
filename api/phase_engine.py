@@ -17,6 +17,11 @@ import asyncio
 # 1. Data Layer — Pull daily snapshots from events table
 # ---------------------------------------------------------------------------
 
+async def get_daily_snapshots(mint: str, days: int = 7) -> List[Dict]:
+    """
+    Returns one row per day for the given token over the last N days.
+    Includes repeat makers (stickiness) for cohort analysis.
+    """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             # Enhanced query to get repeat makers (wallets active today that were active yesterday)
