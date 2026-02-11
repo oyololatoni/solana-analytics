@@ -285,6 +285,15 @@ async def process_batch():
                             logger.error(f"Failed to update job {job_id} failure status: {update_err}")
 
             await conn.commit()
+            
+            # Post-batch: Check Snapshots (Placeholder)
+            # In v1, we check if liquidity > $50k. Currently not tracked.
+            if batch_token_ids:
+                for token_address, token_id in batch_token_ids.items():
+                    # Placeholder: Check if we have enough data (e.g. 50 trades) to simulate validity
+                    # await check_and_trigger_snapshot(token_id)
+                    pass
+
             return len(jobs)
 
 async def run_worker():
