@@ -83,10 +83,18 @@ async def process_batch():
                                 found_tracked_token = False
                                 inserted_for_tx = False
 
-                                # 3. Broad Swap Detection
-                                all_legs = swap.get("tokenInputs", []) + swap.get("tokenOutputs", [])
+                                # 3. Directional Swap Detection
+                                legs_to_process = []
                                 
-                                for leg in all_legs:
+                                # Token Outputs = Wallet RECEIVED token (Buy / 'in')
+                                for leg in swap.get("tokenOutputs", []):
+                                    legs_to_process.append((leg, 'in'))
+                                    
+                                # Token Inputs = Wallet SENT token (Sell / 'out')
+                                for leg in swap.get("tokenInputs", []):
+                                    legs_to_process.append((leg, 'out'))
+                                
+                                for leg, direction in legs_to_process:
                                     mint = leg.get("mint")
                                     if mint not in TRACKED_TOKENS:
                                         continue
@@ -104,14 +112,14 @@ async def process_batch():
                                             """
                                             INSERT INTO events (
                                                 tx_signature, slot, event_type, wallet,
-                                                token_mint, amount, block_time, program_id, metadata
+                                                token_mint, amount, block_time, program_id, metadata, direction
                                             )
-                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                             ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
                                             """,
                                             (
                                                 signature, slot, "swap", wallet, mint, amount,
-                                                block_time, swap.get("program", ""), json.dumps(tx),
+                                                block_time, swap.get("program", ""), json.dumps(tx), direction
                                             ),
                                         )
                                         
