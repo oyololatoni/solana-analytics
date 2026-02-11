@@ -242,7 +242,7 @@ async def process_batch():
                                                                 bt,
                                                                 swap.get("program", ""), 
                                                                 json.dumps(raw_tx), 
-                                                                "unknown"
+                                                                None # Fixed: "unknown" -> None
                                                             ),
                                                         )
                                                 except Exception as legacy_err:
