@@ -44,53 +44,40 @@ async def filter_tokens(req: ScreenerRequest):
 
     if has_structural:
         from api.phase_engine import analyze_all_tokens
-        # Analyze all active tokens in DB
         tokens = await analyze_all_tokens(days=7)
         
         filtered = []
         for t in tokens:
-            sig = t.get("signals", {})
-            if not sig or sig.get("insufficient_data"):
-                continue
-                
             include = True
             for f in req.filters:
                 val = None
-                if f.metric == 'unique_growth': val = sig.get("unique_growth_rate")
-                elif f.metric == 'ratio': val = sig.get("unique_to_swap_ratio")
-                elif f.metric == 'decline': val = sig.get("decline_from_peak")
-                elif f.metric == 'volume_24h': val = t.get("signals", {}).get("volume") # use engine's latest day vol
-                elif f.metric == 'swap_count_24h': val = t.get("signals", {}).get("swap_count")
+                if f.metric == 'unique_growth': val = t.get("unique_growth")
+                elif f.metric == 'ratio': val = t.get("usr")
+                elif f.metric == 'decline': val = t.get("decline_from_peak")
+                elif f.metric == 'volume_24h': val = t.get("volume")
+                elif f.metric == 'swap_count_24h': val = t.get("swap_count")
                 
                 if val is None:
-                    continue # or skip?
+                    continue
                 
                 if f.condition == 'gt' and not (val > f.value): include = False
                 elif f.condition == 'lt' and not (val < f.value): include = False
             
             if include:
-                # Map to TokenResult format
                 from config import get_token_name
                 filtered.append({
                     "mint": t["mint"],
                     "name": t.get("name") or get_token_name(t["mint"]),
-                    "volume_24h": sig.get("volume", 0),
-                    "swap_count_24h": sig.get("swap_count", 0),
-                    "unique_makers_24h": sig.get("unique_makers", 0),
-                    "price_change_24h": sig.get("unique_growth_rate", 0) * 100, # use growth as a proxy for change
-                    "metric_value": sig.get("unique_growth_rate", 0) # primary sort key if requested
+                    "volume_24h": t.get("volume", 0),
+                    "swap_count_24h": t.get("swap_count", 0),
+                    "unique_makers_24h": t.get("unique_makers", 0),
+                    "price_change_24h": (t.get("unique_growth", 0) or 0) * 100,
+                    "ev_score": t.get("ev_score", 0),
+                    "phase": t.get("phase", "DORMANT"),
                 })
         
-        # Sort
         reverse = (req.sort_direction == 'desc')
-        # Map sort_by to signal keys if necessary
-        sort_key_map = {
-            "volume_24h": "volume_24h",
-            "swap_count_24h": "swap_count_24h",
-            "price_change_24h": "price_change_24h"
-        }
-        sort_attr = sort_key_map.get(req.sort_by, req.sort_by)
-        filtered.sort(key=lambda x: x.get(sort_attr, 0), reverse=reverse)
+        filtered.sort(key=lambda x: x.get(req.sort_by, 0) or 0, reverse=reverse)
         return filtered[:50]
 
     # Fallback to direct DB query for non-structural filters (more efficient)
