@@ -189,7 +189,7 @@ async def process_batch():
                                     except psycopg.Error as e:
                                         # Log constraint violations or other errors
                                         logger.error(f"Failed to insert trade {signature}: {e}")
-                                        pass
+                                        raise e # DEBUG: Raise to see error in DB status
 
 
                                     # --- 5. LEGACY WRITE (events) ---
