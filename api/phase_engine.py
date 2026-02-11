@@ -38,13 +38,14 @@ async def get_daily_snapshots(mint: str, days: int = 7) -> List[Dict]:
                     COUNT(DISTINCT curr.wallet) as unique_makers,
                     COUNT(*) FILTER (WHERE prev.wallet IS NOT NULL) as repeat_makers,
                     (SELECT COUNT(*) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as swap_count,
-                    (SELECT COALESCE(SUM(amount), 0) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as volume
+                    (SELECT COALESCE(SUM(amount), 0) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day) as volume,
+                    (SELECT COALESCE(SUM(amount), 0) FROM events e WHERE e.token_mint = %s AND DATE(e.block_time) = curr.day AND direction = 'in') as vol_buy
                 FROM daily_wallets curr
                 LEFT JOIN daily_wallets prev ON curr.wallet = prev.wallet AND prev.day = curr.day - INTERVAL '1 day'
                 GROUP BY curr.day
                 ORDER BY curr.day ASC
                 """,
-                (mint, days + 1, mint, mint),
+                (mint, days + 1, mint, mint, mint),
             )
             rows = await cur.fetchall()
 
@@ -55,6 +56,7 @@ async def get_daily_snapshots(mint: str, days: int = 7) -> List[Dict]:
             "repeat_makers": row[2],
             "swap_count": row[3],
             "volume": float(row[4]),
+            "vol_buy": float(row[5]),
         }
         for row in rows
     ]
@@ -163,6 +165,9 @@ def compute_signals(snapshots: List[Dict]) -> Dict:
         
         # New: Stickiness (Cohort health)
         "stickiness": round(today["repeat_makers"] / today["unique_makers"], 4) if today["unique_makers"] > 0 else 0,
+        
+        # New: Buy Pressure (Exhaustion indicator)
+        "buy_ratio": round(today["vol_buy"] / today["volume"], 4) if today["volume"] > 0 else 0.5,
     }
 
 
