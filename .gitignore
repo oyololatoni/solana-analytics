@@ -6,3 +6,5 @@ __pycache__/
 *.egg-info/
 inotify_fix_test.txt
 test.txt
+*.log
+.DS_Store

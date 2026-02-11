@@ -1,0 +1,26 @@
+# fly.worker.toml
+# Configuration for the Ingestion Worker
+# Handles background processing of raw_webhooks.
+
+app = "solana-analytics-worker"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+  processes = ["worker"]
+
+[env]
+  # Worker specific env vars can go here if not in secrets
+  POLL_INTERVAL = "1.0"
+  BATCH_SIZE = "50"
+
+[processes]
+  worker = "bash start_worker.sh"
+
+# No HTTP service
+# [http_service] is deliberately omitted because worker is internal only.
