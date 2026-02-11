@@ -135,6 +135,7 @@ async def process_batch():
                                     if not token_id:
                                         # Deduplicate token insertion
                                         # Use ON CONFLICT DO UPDATE to get ID reliably
+                                        logger.info(f"Resolving token ID for {mint} on chain {chain_id}")
                                         await cur.execute(
                                             """
                                             INSERT INTO tokens (chain_id, address, created_at_chain)
@@ -145,8 +146,14 @@ async def process_batch():
                                             """,
                                             (chain_id, mint, block_time)
                                         )
-                                        token_id = (await cur.fetchone())[0]
-                                        batch_token_ids[mint] = token_id
+                                        row = await cur.fetchone()
+                                        if row:
+                                            token_id = row[0]
+                                            batch_token_ids[mint] = token_id
+                                            logger.info(f"Resolved token ID: {token_id}")
+                                        else:
+                                            logger.error(f"Failed to resolve token ID for {mint}")
+                                            continue
 
                                     # B. Upsert Wallet Profile
                                     # Only update last_seen if newer
@@ -180,7 +187,8 @@ async def process_batch():
                                             )
                                         )
                                     except psycopg.Error as e:
-                                        # Ignore constraint violations for trades (duplicates)
+                                        # Log constraint violations or other errors
+                                        logger.error(f"Failed to insert trade {signature}: {e}")
                                         pass
 
 
