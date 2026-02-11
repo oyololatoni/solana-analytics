@@ -121,8 +121,6 @@ async def filter_tokens(req: ScreenerRequest):
                 
                 params.append(f.value)
             
-                params.append(f.value)
-            
             # Sorting
             sort_map = {
                 "volume_24h": "volume_24h",
