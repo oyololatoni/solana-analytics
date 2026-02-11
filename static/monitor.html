@@ -496,6 +496,13 @@
                             <span id="int-buy" class="signal-interpretation"></span>
                         </div>
                     </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Liq. Shift</span>
+                        <div style="text-align: right;">
+                            <span id="sig-liq" class="signal-val">—</span>
+                            <span id="int-liq" class="signal-interpretation"></span>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- C. Momentum & Acceleration -->
@@ -747,6 +754,10 @@
             setVal("sig-buy", sig.buy_ratio, 2, "", "%");
             const buy = sig.buy_ratio;
             document.getElementById("int-buy").textContent = !buy ? "" : buy > 0.7 ? "Exhaustion?" : buy < 0.3 ? "Seller fatigue?" : "Balanced";
+
+            setVal("sig-liq", sig.liquidity_shift, 4);
+            const liq = sig.liquidity_shift;
+            document.getElementById("int-liq").textContent = !liq ? "" : liq > 0.1 ? "Volatile shifts" : "Stable";
         }
 
         // Helpers
