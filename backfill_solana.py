@@ -51,6 +51,11 @@ def backfill(limit_per_page=100, max_pages=50):
 
     pages = 0
     before = None
+    
+    # Tracking counters
+    total_inserted = 0
+    total_duplicates = 0
+    total_processed = 0
 
     while pages < max_pages:
         print(f"Fetching page {pages + 1}")
@@ -92,6 +97,7 @@ def backfill(limit_per_page=100, max_pages=50):
                 continue
 
             block_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            total_processed += 1
 
             if DRY_RUN:
                 print({
@@ -103,6 +109,7 @@ def backfill(limit_per_page=100, max_pages=50):
                     "amount": amount,
                     "block_time": block_time.isoformat(),
                 })
+                total_inserted += 1
             else:
                 cur.execute(
                     """
@@ -118,7 +125,7 @@ def backfill(limit_per_page=100, max_pages=50):
                         metadata
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (tx_signature) DO NOTHING
+                    ON CONFLICT (tx_signature, event_type, wallet) DO NOTHING
                     """,
                     (
                         signature,
@@ -132,9 +139,16 @@ def backfill(limit_per_page=100, max_pages=50):
                         json.dumps(tx),
                     ),
                 )
+                
+                # Track inserts vs duplicates
+                if cur.rowcount == 1:
+                    total_inserted += 1
+                else:
+                    total_duplicates += 1
 
         if not DRY_RUN:
             conn.commit()
+            print(f"  ✓ Page {pages + 1}: processed={total_processed} inserted={total_inserted} duplicates={total_duplicates}")
 
         before = txs[-1]["signature"]
         pages += 1
@@ -144,7 +158,16 @@ def backfill(limit_per_page=100, max_pages=50):
         cur.close()
         conn.close()
 
-    print("Backfill complete")
+    # Summary statistics
+    print("\n" + "="*50)
+    print("BACKFILL SUMMARY")
+    print("="*50)
+    print(f"Pages fetched:      {pages}")
+    print(f"Transactions:       {total_processed}")
+    print(f"Inserted (new):     {total_inserted}")
+    print(f"Duplicates (skip):  {total_duplicates}")
+    print("="*50)
+
 
 # ------------------
 # ENTRYPOINT
