@@ -565,6 +565,7 @@
                                 <th>Capital</th>
                                 <th>Lifecycle</th>
                                 <th>Bias</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="rankings-body"></tbody>
@@ -680,6 +681,11 @@
                         <td class="mono" style="font-size:0.8rem;">${cap.toFixed(1)}</td>
                         <td class="mono" style="font-size:0.8rem;">${life.toFixed(0)}</td>
                         <td><span class="decision-badge ${biasClass}">${bias}</span></td>
+                        <td>
+                            <a href="details.html?token_id=${t.token_id}" class="decision-badge" style="text-decoration:none; background:var(--card-hover); color:var(--accent); border-color:var(--accent);">
+                                ANALYSIS ↗
+                            </a>
+                        </td>
                     `;
                     tbody.appendChild(row);
                 });

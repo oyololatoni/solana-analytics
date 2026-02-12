@@ -200,10 +200,10 @@ async def get_all_phases():
         async with conn.cursor() as cur:
             await cur.execute("""
                 SELECT 
-                    ts.mint, 
-                    ts.phase, 
+                    ts.token_mint, 
+                    ts.current_phase as phase, 
                     ts.days_since_peak,
-                    ts.decision,
+                    ts.decision_bias as decision,
                     -- V1 Scores (fallback to legacy if NULL, though logically distinct)
                     fs.score_total as ev_score, 
                     fs.score_momentum,
@@ -219,9 +219,10 @@ async def get_all_phases():
                     ts.vpu_cv,
                     ts.unique_growth,
                     ts.volume_growth,
-                    ts.decline_from_peak
+                    ts.decline_from_peak,
+                    t.id
                 FROM token_state ts
-                JOIN tokens t ON t.mint = ts.mint
+                JOIN tokens t ON t.address = ts.token_mint
                 LEFT JOIN LATERAL (
                     SELECT * 
                     FROM feature_snapshots fs 
@@ -259,6 +260,7 @@ async def get_all_phases():
                     "unique_growth": float(r[15]) if r[15] is not None else 0.0,
                     "volume_growth": float(r[16]) if r[16] is not None else 0.0,
                     "decline_from_peak": float(r[17]) if r[17] is not None else 0.0,
+                    "token_id": r[18],
                     "name": get_token_name(r[0]) # Attach name immediately
                 })
         
