@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DATABASE_URL, INGESTION_ENABLED
+from app.core.config import DATABASE_URL, INGESTION_ENABLED
 
 # CONFIGURATION
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")

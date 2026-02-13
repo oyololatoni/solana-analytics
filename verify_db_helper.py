@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from api.db import init_db, get_db_connection
+from app.core.db import init_db, get_db_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

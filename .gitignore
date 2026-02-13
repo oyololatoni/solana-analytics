@@ -8,3 +8,4 @@ inotify_fix_test.txt
 test.txt
 *.log
 .DS_Store
+backfill_cache/

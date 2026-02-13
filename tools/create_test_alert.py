@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Add project root needed for config
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATABASE_URL, TRACKED_TOKENS
+from app.core.config import DATABASE_URL, TRACKED_TOKENS
 
 def create_test_alert():
     mint = list(TRACKED_TOKENS)[0]

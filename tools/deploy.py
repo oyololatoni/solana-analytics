@@ -24,7 +24,7 @@ from pathlib import Path
 # ─── Config ───────────────────────────────────────────────────────────
 # Add project root to path so we can import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATABASE_URL as CONFIG_DB_URL
+from app.core.config import DATABASE_URL as CONFIG_DB_URL
 
 _env_db = os.environ.get("DATABASE_URL", "")
 DATABASE_URL = _env_db if _env_db and "***" not in _env_db else CONFIG_DB_URL

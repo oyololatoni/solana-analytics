@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Add project root needed for config
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATABASE_URL
+from app.core.config import DATABASE_URL
 
 def check():
     print("Checking alerts table...")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Fix path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATABASE_URL
+from app.core.config import DATABASE_URL
 
 SCHEMA_DIR = Path(__file__).parent.parent / "schema"
 

@@ -6,8 +6,9 @@ import asyncio
 import psycopg
 from datetime import datetime, timezone
 
-from api import logger
-from api.db import init_db, close_db, get_db_connection
+import logging
+logger = logging.getLogger("backfill_solana")
+from app.core.db import init_db, close_db, get_db_connection
 
 # ------------------
 # CONFIG

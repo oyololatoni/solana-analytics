@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Details | Solana Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --card-hover: #334155;
+            --text-main: #e2e8f0;
+            --text-dim: #94a3b8;
+            --accent: #38bdf8;
+            --green: #4ade80;
+            --red: #f87171;
+            --yellow: #facc15;
+            --border: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 2rem;
+            font-size: 14px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .back-link {
+            color: var(--text-dim);
+            text-decoration: none;
+            display: flex;
+            /* Flex to align arrow */
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 500;
+        }
+
+        .back-link:hover {
+            color: var(--accent);
+        }
+
+        .token-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .token-meta {
+            color: var(--text-dim);
+            font-family: 'Roboto Mono', monospace;
+            font-size: 1rem;
+        }
+
+        .action-btn {
+            background: var(--accent);
+            color: #0f172a;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .action-btn:hover {
+            opacity: 0.9;
+        }
+
+        .action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Score Section */
+        .score-section {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+
+        .gauge-card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 2rem;
+            text-align: center;
+            position: relative;
+        }
+
+        .score-val {
+            font-size: 4rem;
+            font-weight: 800;
+            font-family: 'Roboto Mono', monospace;
+            line-height: 1;
+        }
+
+        .score-label {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-top: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Feature Grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 1rem;
+        }
+
+        .feature-card {
+            background: var(--card);
+            padding: 1.5rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .feature-name {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-val {
+            font-size: 1.5rem;
+            font-weight: 700;
+            font-family: 'Roboto Mono', monospace;
+        }
+
+        .feature-desc {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            margin-top: 0.5rem;
+            line-height: 1.4;
+        }
+
+        .good {
+            color: var(--green);
+        }
+
+        .bad {
+            color: var(--red);
+        }
+
+        .neutral {
+            color: var(--text-dim);
+        }
+
+        .warn {
+            color: var(--yellow);
+        }
+
+        /* Toast */
+        #toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: var(--card);
+            padding: 1rem 2rem;
+            border-radius: 6px;
+            border: 1px solid var(--accent);
+            display: none;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <a href="monitor.html" class="back-link">← Back to Dashboard</a>
+                <h1 class="token-title"><span id="t-name">Loading...</span> <span class="token-meta"
+                        id="t-mint">...</span></h1>
+                <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                    <span id="t-phase"
+                        style="background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.8rem;">PHASE</span>
+                    <span id="t-lifecycle"
+                        style="background: rgba(56,189,248,0.15); color:var(--accent); padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.75rem;"></span>
+                    <span id="t-version"
+                        style="background: rgba(74,222,128,0.15); color:var(--green); padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.75rem;"></span>
+                    <span id="t-age"
+                        style="background: rgba(250,204,21,0.15); color:var(--yellow); padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.75rem;"></span>
+                    <span id="t-ts" style="color: var(--text-dim); font-size: 0.8rem; margin-left: 0.5rem;">Detected:
+                        ...</span>
+                </div>
+            </div>
+            <div>
+                <button id="analyze-btn" class="action-btn" onclick="triggerAnalysis()">Analyze Now ⚡</button>
+            </div>
+        </header>
+
+        <!-- Market & Price Section -->
+        <h2 style="border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 1.5rem;">Market &
+            Price</h2>
+        <section class="feature-grid" style="margin-bottom: 3rem;">
+            <div class="feature-card">
+                <div class="feature-name">Current Price</div>
+                <div class="feature-val" id="mp-price">—</div>
+                <div class="feature-desc">Live via DexScreener</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Liquidity (USD)</div>
+                <div class="feature-val" id="mp-liq">—</div>
+                <div class="feature-desc">Total pooled USD</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Multiplier</div>
+                <div class="feature-val" id="mp-mult">—</div>
+                <div class="feature-desc">Since detection</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Distance to 5x</div>
+                <div class="feature-val" id="mp-5x">—</div>
+                <div class="feature-desc">Progress to goal</div>
+            </div>
+        </section>
+
+        <!-- Price Chart Section -->
+        <section
+            style="margin-bottom: 3rem; background: var(--card); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border);">
+            <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; color: var(--text-dim);">Price History
+                (Last 48 Snapshots)</h3>
+            <div style="height: 300px;">
+                <canvas id="priceChart"></canvas>
+            </div>
+        </section>
+
+        <h2 style="border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 1.5rem;">Intelligence
+            Score</h2>
+        <section class="score-section">
+            <div class="gauge-card">
+                <div style="font-size: 0.9rem; color: var(--text-dim); margin-bottom: 1rem;">TOTAL EV SCORE</div>
+                <div class="score-val" id="score-val">--</div>
+                <div class="score-label" id="score-label">--</div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <!-- Sub-scores -->
+                <div class="feature-card">
+                    <div class="feature-name">Momentum Score</div>
+                    <div class="feature-val" id="s-mom">--</div>
+                    <div class="feature-desc">Max 25 pts</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-name">Liquidity Score</div>
+                    <div class="feature-val" id="s-liq">--</div>
+                    <div class="feature-desc">Max 20 pts</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-name">Participation Score</div>
+                    <div class="feature-val" id="s-part">--</div>
+                    <div class="feature-desc">Max 20 pts</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-name">Wallet Score</div>
+                    <div class="feature-val" id="s-wal">--</div>
+                    <div class="feature-desc">Max 20 pts</div>
+                </div>
+            </div>
+        </section>
+
+        <h2 style="border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 1.5rem;">Feature
+            Analysis (16 Metrics)</h2>
+
+        <div class="feature-grid" id="grid">
+            <!-- Populated via JS -->
+        </div>
+
+        <!-- Token Stats Section -->
+        <h2
+            style="border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin: 2rem 0 1.5rem 0; display: flex; justify-content: space-between; align-items: center;">
+            Token Activity
+            <select id="stats-window" onchange="loadTokenStats()"
+                style="background: var(--card); color: var(--text-main); border: 1px solid var(--border); padding: 0.3rem 0.8rem; border-radius: 4px; font-size: 0.9rem;">
+                <option value="1h">Last 1h</option>
+                <option value="24h" selected>Last 24h</option>
+                <option value="7d">Last 7d</option>
+            </select>
+        </h2>
+
+        <div class="feature-grid" id="stats-grid">
+            <div class="feature-card">
+                <div class="feature-name">Swap Count</div>
+                <div class="feature-val" id="stat-swaps">—</div>
+                <div class="feature-desc">Total swaps in window</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Total Volume</div>
+                <div class="feature-val" id="stat-vol">—</div>
+                <div class="feature-desc">Buy + Sell volume</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Buy Volume</div>
+                <div class="feature-val good" id="stat-buy">—</div>
+                <div class="feature-desc">Inbound volume</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Sell Volume</div>
+                <div class="feature-val bad" id="stat-sell">—</div>
+                <div class="feature-desc">Outbound volume</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-name">Unique Makers</div>
+                <div class="feature-val" id="stat-makers">—</div>
+                <div class="feature-desc">Distinct wallets</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast">Analysis triggered successfully! refreshing...</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        const API_BASE = window.location.origin;
+        const urlParams = new URLSearchParams(window.location.search);
+        const tokenId = urlParams.get('token_id');
+
+        // Feature Definitions for Grid
+        const FEATURES = [
+            { key: 'volume_acceleration', label: 'Vol Acceleration', desc: '5m Vol / 30m Avg. > 1.5 is Ignition.', good: 1.5 },
+            { key: 'volume_growth_rate_1h', label: '1h Vol Growth', desc: 'Growth vs 6h Avg.', good: 0.5 },
+            { key: 'trade_frequency_ratio', label: 'Trade Freq Ratio', desc: '5m Tx Count / 30m Avg.', good: 1.2 },
+            { key: 'buy_sell_ratio', label: 'Buy/Sell Ratio', desc: '1h Buy Vol / Sell Vol.', good: 1.0, bad: 0.8 },
+
+            { key: 'unique_wallet_growth_rate', label: 'Unique Wallet Growth', desc: 'New wallets entering.', good: 0.2 },
+            { key: 'wallet_entropy_score', label: 'Wallet Entropy', desc: 'Distribution balance (Shannon). > 2.0 is decentralized.', good: 1.5 },
+            { key: 'early_wallet_retention', label: 'Early Retention', desc: '% First 30m wallets still holding.', good: 0.6 },
+            { key: 'early_wallet_net_accumulation', label: 'Early Net Accum', desc: 'Net accumulation by early wallets.', good: 0 },
+
+            { key: 'liquidity_growth_rate', label: 'Liq Growth', desc: 'Rate of liquidity addition.', good: 0.05 },
+            { key: 'liquidity_stability_score', label: 'Liq Stability', desc: 'Stability of LP.', good: 0.8 },
+            { key: 'liquidity_volatility', label: 'Liq Volatility', desc: 'StdDev of liquidity.', bad_min: 0.2 },
+            { key: 'top10_concentration_delta', label: 'Top 10 Delta', desc: 'Change in Top 10 holdings.', bad_min: 0.05 },
+
+            { key: 'drawdown_depth_1h', label: '1h Drawdown', desc: '% down from 1h peak.', bad_min: 0.15 },
+            { key: 'volume_collapse_ratio', label: 'Vol Collapse', desc: 'Current vs Hist Vol. < 0.4 is fragile.', bad_max: 0.4 },
+            { key: 'lifecycle_state', label: 'Lifecycle State', desc: 'Ignition, Expansion, etc.', isText: true },
+            // 16th? We have 15 mapped. 'is_sniper_candidate' is a result.
+            // Maybe 'liquidity_volatility' again? Or score_risk_penalty
+            { key: 'score_risk_penalty', label: 'Risk Penalty', desc: 'Total penalty points.', bad_min: 5 },
+
+            // Phase 12 Additions
+            { key: 'volume_5m_usd', label: 'Vol 5m (USD)', desc: 'Recent volume in USD.', good: 1000 },
+            { key: 'max_trade_gap_minutes', label: 'Max Trade Gap', desc: 'Longest pause (min) in 30m.', bad_min: 5.0 },
+            { key: 'risk_thresholds.price_failure_usd', label: 'Fail Price', desc: 'Price < This = Failure', bad_max: 0 },
+            { key: 'risk_thresholds.liquidity_collapse_usd', label: 'Collapse Liq', desc: 'Liq < This = Crash', bad_max: 0 }
+        ];
+
+        async function init() {
+            if (!tokenId) {
+                document.body.innerHTML = "<h1>No Token ID provided</h1>";
+                return;
+            }
+            await loadData();
+        }
+
+        async function loadData() {
+            try {
+                // Fetch comprehensive details from V2 API
+                const res = await fetch(`${API_BASE}/analytics/token/${tokenId}/details`);
+                if (!res.ok) {
+                    // No snapshot yet — show header + prompt to analyze
+                    document.getElementById('t-name').textContent = `Token #${tokenId}`;
+                    document.getElementById('t-mint').textContent = `ID: ${tokenId}`;
+                    document.getElementById('t-phase').textContent = 'NO DATA';
+                    document.getElementById('t-ts').textContent = 'No snapshot computed yet';
+                    document.getElementById('score-val').textContent = '—';
+                    document.getElementById('score-label').textContent = 'Click "Analyze Now" to generate a snapshot';
+                    document.getElementById('score-label').style.color = 'var(--text-dim)';
+                    return;
+                }
+                const data = await res.json();
+
+                // Store mint for stats calls
+                window._tokenMint = data.structural.address;
+                window._tokenName = data.structural.symbol || `Token #${tokenId}`;
+
+                renderHeader(data);
+                renderScore(data);
+                renderGrid(data);
+
+                // Load stats and prices after we have the mint
+                loadTokenStats();
+                loadPriceData();
+
+            } catch (e) {
+                console.error(e);
+                alert("Error loading token data: " + e.message);
+            }
+        }
+
+        async function loadPriceData() {
+            const mint = window._tokenMint;
+            if (!mint) return;
+            try {
+                const res = await fetch(`${API_BASE}/prices/${mint}`);
+                if (!res.ok) return;
+                const d = await res.json();
+
+                // Price
+                const p = d.current_price;
+                const pStr = p < 0.01 ? '$' + p.toExponential(2) : '$' + p.toFixed(4);
+                document.getElementById('mp-price').textContent = p > 0 ? pStr : '—';
+
+                // Liquidity
+                const l = d.liquidity_usd;
+                document.getElementById('mp-liq').textContent = l ? '$' + Math.round(l).toLocaleString() : '—';
+
+                // Multiplier
+                const m = d.multiplier;
+                const elMult = document.getElementById('mp-mult');
+                elMult.textContent = m ? m.toFixed(2) + 'x' : '—';
+                if (m >= 2.0) elMult.style.color = 'var(--green)';
+                else if (m < 0.8) elMult.style.color = 'var(--red)';
+                else elMult.style.color = 'var(--text-main)';
+
+                // Distance to 5x
+                const dist = d.distance_to_5x;
+                const elDist = document.getElementById('mp-5x');
+                if (m && m >= 5.0) {
+                    elDist.textContent = '✅ GOAL MET';
+                    elDist.style.color = 'var(--green)';
+                } else if (dist !== null) {
+                    elDist.textContent = dist.toFixed(0) + '%';
+                    elDist.style.color = 'var(--accent)';
+                } else {
+                    elDist.textContent = '—';
+                }
+
+                // Render Chart
+                if (d.history && d.history.length > 0) {
+                    renderPriceChart(d.history);
+                }
+
+            } catch (e) { console.error('Price error:', e); }
+        }
+
+        let priceChartInstance = null;
+        function renderPriceChart(history) {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+            if (priceChartInstance) priceChartInstance.destroy();
+
+            const labels = history.map(h => new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+            const prices = history.map(h => h.price);
+
+            priceChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Price (USD)',
+                        data: prices,
+                        borderColor: '#38bdf8',
+                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            ticks: { color: '#94a3b8', maxTicksLimit: 8 },
+                            grid: { color: '#334155', display: false }
+                        },
+                        y: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: '#334155' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    return '$' + context.parsed.y.toFixed(6);
+                                }
+                            }
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index',
+                    },
+                }
+            });
+        }
+
+        function renderHeader(data) {
+            document.getElementById('t-name').textContent = data.structural.symbol || `Token #${tokenId}`;
+            const featureMsg = data.feature_snapshot ? `Snapshot #${data.feature_snapshot.snapshot_id}` : "No Snapshot";
+            document.getElementById('t-mint').textContent = featureMsg;
+            document.getElementById('t-phase').textContent = (data.feature_snapshot?.lifecycle_state || 'UNKNOWN').toUpperCase();
+
+            const detected = data.structural.detected_at;
+            document.getElementById('t-ts').textContent = detected ? `Detected: ${new Date(detected).toLocaleString()}` : "Detected: Unknown";
+
+            // Data integrity indicators
+            const outcome = data.lifecycle?.outcome || 'ACTIVE';
+            const statusText = outcome.replace(/_/g, ' ').toUpperCase();
+            document.getElementById('t-lifecycle').textContent = statusText;
+            document.getElementById('t-version').textContent = data.feature_snapshot?.feature_version ? `v${data.feature_snapshot.feature_version}` : '';
+
+            // Time since detection
+            if (detected) {
+                const secs = Math.floor((Date.now() - new Date(detected).getTime()) / 1000);
+                let age;
+                if (secs < 60) age = secs + 's ago';
+                else if (secs < 3600) age = Math.floor(secs / 60) + 'm ago';
+                else if (secs < 86400) age = Math.floor(secs / 3600) + 'h ago';
+                else age = Math.floor(secs / 86400) + 'd ago';
+                document.getElementById('t-age').textContent = `⏱ ${age}`;
+            }
+        }
+
+        function renderScore(data) {
+            if (!data.scoring) return;
+            const s = data.scoring.final_score;
+            const el = document.getElementById('score-val');
+            el.textContent = s.toFixed(1);
+
+            let color = "var(--text-dim)";
+            let label = "Unknown";
+            if (s >= 85) { color = "#a855f7"; label = "SNIPER CANDIDATE 🎯"; }
+            else if (s >= 60) { color = "var(--accent)"; label = "STRUCTURED 🏗️"; }
+            else if (s >= 30) { color = "var(--yellow)"; label = "TRANSITIONAL 🔄"; }
+            else { color = "var(--red)"; label = "LOW PROBABILITY 💤"; }
+
+            el.style.color = color;
+            document.getElementById('score-label').textContent = label;
+            document.getElementById('score-label').style.color = color;
+
+            // Subscores from breakdown
+            const bd = data.scoring.breakdown || {};
+            if (bd.volume_momentum) document.getElementById('s-mom').textContent = bd.volume_momentum.score.toFixed(1);
+            if (bd.market_quality) document.getElementById('s-liq').textContent = bd.market_quality.score.toFixed(1); // Label collision in UI, using market quality for liquidity slot
+            if (bd.price_stability) document.getElementById('s-part').textContent = bd.price_stability.score.toFixed(1); // Label collision, mapping stability to participation slot temporarily or need Update UI labels
+            if (bd.holder_behavior) document.getElementById('s-wal').textContent = bd.holder_behavior.score.toFixed(1);
+
+            // Note: UI labels (Liquidity, Participation) might need update to match new V2 categories (Market Quality, Price Stability)
+            // For now mapping:
+            // Momentum -> Momentum
+            // Liquidity -> Market Quality
+            // Participation -> Price Stability
+            // Wallet -> Holder Behavior
+        }
+
+        function renderGrid(data) {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = "";
+            const snap = data.feature_snapshot || {};
+
+            FEATURES.forEach(f => {
+                // val = snap[f.key]; // Old flat access
+                // Support nested keys like 'risk_thresholds.price_failure_usd'
+                const val = f.key.split('.').reduce((o, i) => (o ? o[i] : undefined), snap);
+
+                const card = document.createElement('div');
+                card.className = "feature-card";
+
+                let displayVal = val;
+                let colorClass = "neutral";
+
+                if (f.isText) {
+                    displayVal = val;
+                } else {
+                    displayVal = (val !== undefined && val !== null && typeof val === 'number') ? val.toFixed(2) : (val || "—");
+
+                    // Simple coloring heuristics
+                    if (val !== undefined && val !== null) {
+                        if (f.good !== undefined && val >= f.good) colorClass = "good";
+                        if (f.bad !== undefined && val <= f.bad) colorClass = "bad";
+                        if (f.bad_min !== undefined && val >= f.bad_min) colorClass = "bad";
+                        if (f.bad_max !== undefined && val <= f.bad_max) colorClass = "bad";
+                    }
+                }
+
+                card.innerHTML = `
+                    <div class="feature-name">${f.label}</div>
+                    <div class="feature-val ${colorClass}">${displayVal}</div>
+                    <div class="feature-desc">${f.desc}</div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        async function triggerAnalysis() {
+            const btn = document.getElementById('analyze-btn');
+            btn.disabled = true;
+            btn.textContent = "Analyzing...";
+
+            try {
+                // Call V2 refresh endpoint
+                const res = await fetch(`${API_BASE}/analytics/token/${tokenId}/refresh`, { method: 'POST' });
+                if (!res.ok) throw new Error("Failed");
+
+                const toast = document.getElementById('toast');
+                toast.style.display = "block";
+
+                setTimeout(() => {
+                    location.reload();
+                }, 1500);
+
+            } catch (e) {
+                alert("Trigger Failed: " + e.message);
+                btn.disabled = false;
+                btn.textContent = "Analyze Now ⚡";
+            }
+        }
+
+        init();
+
+        // Token Stats
+        async function loadTokenStats() {
+            const mint = window._tokenMint;
+            if (!mint) return;
+            const win = document.getElementById('stats-window').value;
+            try {
+                // Call V2 stats endpoint
+                const res = await fetch(`${API_BASE}/analytics/token/${mint}/stats?window=${win}`);
+                if (!res.ok) return;
+                const d = await res.json();
+                document.getElementById('stat-swaps').textContent = d.swap_count.toLocaleString();
+                document.getElementById('stat-vol').textContent = '$' + Math.round(d.volume_total).toLocaleString();
+                document.getElementById('stat-buy').textContent = '$' + Math.round(d.volume_buy).toLocaleString();
+                document.getElementById('stat-sell').textContent = '$' + Math.round(d.volume_sell).toLocaleString();
+                document.getElementById('stat-makers').textContent = d.unique_makers.toLocaleString();
+            } catch (e) { console.error('Stats error:', e); }
+        }
+        window.loadTokenStats = loadTokenStats;
+    </script>
+</body>
+
+</html>

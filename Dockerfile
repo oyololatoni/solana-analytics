@@ -13,6 +13,6 @@ COPY . .
 # IMPORTANT:
 # - Uses Fly-injected PORT when present
 # - Falls back to 8000 if PORT is missing
-CMD ["sh", "-c", "echo STARTING UVICORN && uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "echo STARTING UVICORN && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
 

@@ -2,7 +2,7 @@ import asyncio
 import json
 import random
 from datetime import datetime, timedelta, timezone
-from api.db import get_db_connection, init_db, close_db
+from app.core.db import get_db_connection, init_db, close_db
 
 TOKEN_MINT = "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
 

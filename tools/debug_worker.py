@@ -1,7 +1,7 @@
 
 import asyncio
 from datetime import datetime, timezone
-from api.db import init_db, close_db, get_db_connection
+from app.core.db import init_db, close_db, get_db_connection
 
 async def debug():
     await init_db()

@@ -2,7 +2,7 @@
 import asyncio
 import json
 import time
-from api.db import init_db, close_db, get_db_connection
+from app.core.db import init_db, close_db, get_db_connection
 
 async def inject():
     payload = [{

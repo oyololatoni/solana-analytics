@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Add project root needed for config
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATABASE_URL, SLACK_WEBHOOK_URL
+from app.core.config import DATABASE_URL, SLACK_WEBHOOK_URL
 
 # Poll interval in seconds
 POLL_INTERVAL = 60

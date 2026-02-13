@@ -8,25 +8,25 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from api import logger
-from api.db import init_db, close_db, get_db_connection
-from config import TRACKED_TOKENS
+logger = logging.getLogger("worker")
+from app.core.db import init_db, close_db, get_db_connection
+from app.core.config import TRACKED_TOKENS
 
 # Feature Pipeline
-from api.rolling_metrics import compute_rolling_metrics
-from api.features_v1 import check_snapshot_trigger
-from api.lifecycle import check_lifecycle_updates
+from app.engines.v1.features import check_snapshot_trigger
+from app.engines.v1.label_worker import run_resolution_engine
+from app.engines.v1.eligibility import run_eligibility_check
 
 # Chain Abstraction
-from chains.registry import registry
-from chains.solana_adapter import SolanaAdapter
-from chains.models import CanonicalTrade, CanonicalWalletInteraction
+from app.ingestion.registry import registry
+from app.ingestion.solana_adapter import SolanaAdapter
+from app.ingestion.models import CanonicalTrade, CanonicalWalletInteraction
 
 # Register Adapters
 registry.register("solana", SolanaAdapter())
 
 # Configuration
-BATCH_SIZE = 50
+BATCH_SIZE = 500
 POLL_INTERVAL = 1.0  # seconds
 
 # Global shutdown event
@@ -112,19 +112,24 @@ async def insert_trade(cur, chain_id, token_id, event):
             (chain_id, event.wallet_address, event.timestamp, event.timestamp)
         )
         
-        # Insert Trade
+        # Insert Trade with pair tracking (schema_version=2)
+        # Reject trade if pair_address is None (cannot determine pool)
+        if not hasattr(event, 'pair_address') or event.pair_address is None:
+            logger.warning(f"Skipping trade {event.tx_signature}: cannot extract pair_address")
+            return False
+        
         await cur.execute(
             """
             INSERT INTO trades (
                 chain_id, token_id, tx_signature, wallet_address,
-                side, amount_token, amount_sol, slot, timestamp
+                side, amount_token, amount_sol, pair_address, schema_version, slot, timestamp
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 2, %s, %s)
             ON CONFLICT (chain_id, tx_signature, timestamp) DO NOTHING
             """,
             (
                 chain_id, token_id, event.tx_signature, event.wallet_address,
-                event.side, event.amount_token, event.amount_sol, event.slot, event.timestamp
+                event.side, event.amount_token, event.amount_sol, event.pair_address, event.slot, event.timestamp
             )
         )
         return cur.rowcount > 0
@@ -193,8 +198,9 @@ async def process_batch():
                                         found_tracked_token = False
                                         
                                         for event in canonical_events:
-                                            if event.token_address not in TRACKED_TOKENS:
-                                                continue
+                                            # Allow all tokens for calibration phase
+                                            # if event.token_address not in TRACKED_TOKENS:
+                                            #     continue
                                             
                                             found_tracked_token = True
                                             
@@ -212,6 +218,7 @@ async def process_batch():
                                                     swaps_inserted += 1
 
                                         if not found_tracked_token:
+                                            # This only happens if canonical_events was empty or ensure_token_id failed for all
                                             ignored_no_tracked_tokens += 1
 
                                         # 3. Legacy Write
@@ -321,8 +328,11 @@ async def run_worker():
     poll_interval = POLL_INTERVAL
     last_rolling_metrics = 0.0  # epoch
     last_label_check = 0.0
+    last_eligibility = 0.0
     ROLLING_INTERVAL = 60.0    # Compute rolling metrics every 60s
     LABEL_INTERVAL = 300.0     # Check labels every 5 minutes
+    ELIGIBILITY_INTERVAL = 300.0 # Run eligibility gate every 5 minutes
+    # NOTE: Calibration/training runs OFFLINE (local machine), not here.
 
     while not shutdown_event.is_set():
         try:
@@ -337,13 +347,23 @@ async def run_worker():
                 except Exception as rm_err:
                     logger.error(f"Rolling metrics error: {rm_err}")
 
-            # Periodic: Lifecycle Worker (every 5 min)
+            # Periodic: Label Worker (every 5 min)
             if now_epoch - last_label_check > LABEL_INTERVAL:
                 try:
-                    await check_lifecycle_updates()
+                    await run_resolution_engine()
                     last_label_check = now_epoch
                 except Exception as lw_err:
-                    logger.error(f"Lifecycle worker error: {lw_err}")
+                    logger.error(f"Label worker error: {lw_err}")
+            
+            # Periodic: Eligibility Gate (every 5 min)
+            if now_epoch - last_eligibility > ELIGIBILITY_INTERVAL:
+                try:
+                    stats = await run_eligibility_check()
+                    last_eligibility = now_epoch
+                except Exception as eg_err:
+                    logger.error(f"Eligibility gate error: {eg_err}")
+            
+
 
             if count == 0:
                 idle_polls += 1
